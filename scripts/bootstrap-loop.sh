@@ -53,8 +53,11 @@ if [[ ! -x "$(command -v claude)" ]]; then
   echo "claude CLI not on PATH" >&2; exit 1
 fi
 
-# Gather pending session paths
-mapfile -t SESSIONS < <(node "$EXTRACT" --list-pending "${FILTER_ARGS[@]}")
+# Gather pending session paths (while-read loop for bash 3.2 compatibility — macOS default)
+SESSIONS=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && SESSIONS+=("$line")
+done < <(node "$EXTRACT" --list-pending "${FILTER_ARGS[@]}")
 
 COUNT=${#SESSIONS[@]}
 if (( LIMIT > 0 && LIMIT < COUNT )); then
