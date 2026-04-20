@@ -105,19 +105,50 @@ node ~/.claude/wiki/scripts/wiki-sync.js --migrate
 ### 4. Bootstrap from existing conversations
 
 ```bash
-# See all your sessions
+# See all your sessions with status
 node ~/.claude/wiki/scripts/wiki-extract.js --list
+```
 
-# Extract all conversations (outputs text for Claude to read)
+**Recommended — iterative bootstrap (handles long histories without blowing Claude's context):**
+
+Synthesizing every past session in a single Claude turn doesn't scale — a few months of history will exceed the context window. Instead, process one session at a time:
+
+```bash
+# Loop: one session per Claude invocation
+for s in $(node ~/.claude/wiki/scripts/wiki-extract.js --list-pending); do
+  node ~/.claude/wiki/scripts/wiki-extract.js --session "$s" | \
+    claude -p "Read this session and update the wiki per ~/.claude/wiki/_schema.md"
+  node ~/.claude/wiki/scripts/wiki-extract.js --mark-processed "$s"
+done
+```
+
+Each iteration fits in one context window, synthesizes incrementally, commits (if you wire a git-commit step into your schema), moves on. Leave it running overnight.
+
+**Shared machines — filter out other users' sessions:**
+
+```bash
+# Exclude any project dir whose name contains "partner"
+node ~/.claude/wiki/scripts/wiki-extract.js --list-pending --exclude-project partner
+```
+
+`--exclude-project` and `--include-project` are both repeatable and match by substring against the sanitized project directory name (the subdirectories of `~/.claude/projects/`).
+
+**Single-dump alternative (only for small histories):**
+
+```bash
 node ~/.claude/wiki/scripts/wiki-extract.js --bootstrap
 ```
 
-Then tell Claude: "Read the output above and create wiki pages for the key knowledge — decisions, patterns, preferences, troubleshooting."
+Dumps everything unprocessed into one output blob. Only viable if your total history fits in one Claude context.
 
 ### 5. Mark as processed
 
 ```bash
+# Mark everything processed (declare bootstrap bankruptcy — start fresh from today)
 node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed
+
+# Or with filters
+node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed --exclude-project partner
 ```
 
 ## Commands
@@ -127,10 +158,18 @@ node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed
 | Command | What it does |
 |---------|-------------|
 | `--list` | Show all sessions with processed/pending status |
-| `--bootstrap` | Extract all unprocessed sessions |
+| `--list-pending` | Print pending session paths (one per line — for shell loops) |
 | `--session <path>` | Extract a single session |
+| `--bootstrap` | Extract all unprocessed sessions as one dump (only for small histories) |
 | `--mark-processed <path>` | Mark a session as done |
 | `--mark-all-processed` | Mark everything as done |
+
+**Project filters** (apply to `--list`, `--list-pending`, `--bootstrap`, `--mark-all-processed`; repeatable):
+
+| Flag | What it does |
+|------|-------------|
+| `--include-project <substr>` | Only include sessions whose sanitized project dir contains `<substr>` |
+| `--exclude-project <substr>` | Skip sessions whose sanitized project dir contains `<substr>` |
 
 ### wiki-sync.js
 
