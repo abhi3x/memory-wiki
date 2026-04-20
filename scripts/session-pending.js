@@ -33,6 +33,15 @@ async function main() {
     const { session_id, transcript_path, cwd } = data;
     if (!session_id || !transcript_path) return;
 
+    // Respect WIKI_EXCLUDE_PROJECTS (comma-separated substrings) — skip if the
+    // transcript path matches. Useful when multiple users share a machine.
+    const exclude = (process.env.WIKI_EXCLUDE_PROJECTS || '')
+      .split(',').map(s => s.trim()).filter(Boolean);
+    if (exclude.some(p => transcript_path.includes(p))) {
+      log(`Skipped (WIKI_EXCLUDE_PROJECTS match): ${session_id}`);
+      return;
+    }
+
     // Check if already in processed list
     const processedPath = path.join(os.homedir(), '.claude', 'wiki', '_processed.json');
     try {

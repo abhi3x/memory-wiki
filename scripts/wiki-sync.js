@@ -14,8 +14,12 @@
  *   node wiki-sync.js --migrate        # Migrate existing memory files to wiki
  *   node wiki-sync.js --migrate --dry-run  # Preview migration without writing
  *
+ * Project filters (repeatable; apply to --migrate and default sync):
+ *   --include-project <substr>   Only process project dirs whose name contains <substr>
+ *   --exclude-project <substr>   Skip project dirs whose name contains <substr>
+ *
  * Designed to run via cron:
- *   42 23 * * * node ~/.claude/wiki/scripts/wiki-sync.js 2>&1 >> ~/.claude/wiki/_sync.log
+ *   42 23 * * * node ~/.claude/wiki/scripts/wiki-sync.js --exclude-project partner 2>&1 >> ~/.claude/wiki/_sync.log
  */
 
 const fs = require('fs');
@@ -147,7 +151,7 @@ function buildWikiFrontmatter(id, wikiType, scope, confidence, tags, related) {
   return lines.join('\n');
 }
 
-function migrateMemoryFiles(dryRun) {
+function migrateMemoryFiles(dryRun, filters = { include: [], exclude: [] }) {
   const migrated = [];
   const skipped = [];
   let projectDirs;
@@ -155,6 +159,11 @@ function migrateMemoryFiles(dryRun) {
   try {
     projectDirs = fs.readdirSync(CLAUDE_PROJECTS, { withFileTypes: true })
       .filter(d => d.isDirectory())
+      .filter(d => {
+        if (filters.include.length > 0 && !filters.include.some(p => d.name.includes(p))) return false;
+        if (filters.exclude.some(p => d.name.includes(p))) return false;
+        return true;
+      })
       .map(d => path.join(CLAUDE_PROJECTS, d.name));
   } catch {
     log('Could not read projects directory');
@@ -522,12 +531,17 @@ function extractCount(line) {
 
 // ── Sync MEMORY.md across all projects ───────────────────────────────────────
 
-function syncMemoryFiles() {
+function syncMemoryFiles(filters = { include: [], exclude: [] }) {
   // Find all project directories
   let projectDirs;
   try {
     projectDirs = fs.readdirSync(CLAUDE_PROJECTS, { withFileTypes: true })
       .filter(d => d.isDirectory())
+      .filter(d => {
+        if (filters.include.length > 0 && !filters.include.some(p => d.name.includes(p))) return false;
+        if (filters.exclude.some(p => d.name.includes(p))) return false;
+        return true;
+      })
       .map(d => path.join(CLAUDE_PROJECTS, d.name));
   } catch {
     log('Could not read projects directory');
@@ -670,10 +684,17 @@ const extractOnly = args.includes('--extract-only');
 const doMigrate = args.includes('--migrate');
 const dryRun = args.includes('--dry-run');
 
+// Parse repeatable --include-project / --exclude-project
+const filters = { include: [], exclude: [] };
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--include-project' && args[i + 1]) { filters.include.push(args[i + 1]); i++; }
+  else if (args[i] === '--exclude-project' && args[i + 1]) { filters.exclude.push(args[i + 1]); i++; }
+}
+
 try {
   if (doMigrate) {
     log(dryRun ? 'Migration dry run...' : 'Migrating memory files to wiki...');
-    const { migrated, skipped } = migrateMemoryFiles(dryRun);
+    const { migrated, skipped } = migrateMemoryFiles(dryRun, filters);
 
     if (migrated.length === 0 && skipped.length === 0) {
       log('No memory files found to migrate');
@@ -690,14 +711,14 @@ try {
 
     // After migration, run sync to update MEMORY.md pointers
     if (!dryRun) {
-      const synced = syncMemoryFiles();
+      const synced = syncMemoryFiles(filters);
       log(`Synced wiki pointer to ${synced} project MEMORY.md files`);
     }
   }
 
   if (!doMigrate) {
     if (!extractOnly) {
-      const synced = syncMemoryFiles();
+      const synced = syncMemoryFiles(filters);
       log(`Synced wiki pointer to ${synced} project MEMORY.md files`);
     }
 

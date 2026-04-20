@@ -8,7 +8,8 @@
 #
 # Usage:
 #   bootstrap-loop.sh [--exclude-project <substr>]... [--include-project <substr>]...
-#   bootstrap-loop.sh --dry-run                   # Show what would run
+#                     [--limit N]                 # Stop after N sessions (useful for piloting)
+#                     [--dry-run]                 # Show what would run
 #
 # Assumes wiki-extract.js is installed at ~/.claude/wiki/scripts/wiki-extract.js
 # and a working `claude` CLI is on PATH.
@@ -26,11 +27,13 @@ set -euo pipefail
 
 EXTRACT="${HOME}/.claude/wiki/scripts/wiki-extract.js"
 DRY_RUN=0
+LIMIT=0
 FILTER_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --limit) LIMIT="$2"; shift 2 ;;
     --exclude-project|--include-project) FILTER_ARGS+=("$1" "$2"); shift 2 ;;
     -h|--help)
       sed -n '3,25p' "$0"
@@ -54,7 +57,13 @@ fi
 mapfile -t SESSIONS < <(node "$EXTRACT" --list-pending "${FILTER_ARGS[@]}")
 
 COUNT=${#SESSIONS[@]}
-echo "Found $COUNT pending session(s)"
+if (( LIMIT > 0 && LIMIT < COUNT )); then
+  SESSIONS=("${SESSIONS[@]:0:LIMIT}")
+  echo "Found $COUNT pending session(s); limiting to first $LIMIT"
+  COUNT=$LIMIT
+else
+  echo "Found $COUNT pending session(s)"
+fi
 [[ $COUNT -eq 0 ]] && exit 0
 
 if [[ $DRY_RUN -eq 1 ]]; then
