@@ -19,14 +19,14 @@
  *   --exclude-project <substr>   Skip project dirs whose name contains <substr>
  *
  * Designed to run via cron:
- *   42 23 * * * node ~/.claude/wiki/scripts/wiki-sync.js --exclude-project partner 2>&1 >> ~/.claude/wiki/_sync.log
+ *   42 23 * * * node ~/memory-wiki/scripts/wiki-sync.js --exclude-project partner 2>&1 >> ~/memory-wiki/_sync.log
  */
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const WIKI_ROOT = path.join(os.homedir(), '.claude', 'wiki');
+const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
 const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const GLOBAL_CLAUDE_MD = path.join(os.homedir(), '.claude', 'CLAUDE.md');
 const PROCESSED_PATH = path.join(WIKI_ROOT, '_processed.json');
@@ -376,7 +376,7 @@ function buildWikiPointer(/* projectDir */) {
 
 Wiki pointers live in \`~/.claude/CLAUDE.md\` (global) and \`<project>/CLAUDE.md\` (per-project).
 This file holds only dynamic auto-memory — things Claude noticed during sessions that aren't yet worth promoting to the wiki.
-Canonical content is at \`~/.claude/wiki/\`. Index: \`~/.claude/wiki/_index.md\`. Schema: \`~/.claude/wiki/_schema.md\`.
+Canonical content is at \`~/memory-wiki/\`. Index: \`~/memory-wiki/_index.md\`. Schema: \`~/memory-wiki/_schema.md\`.
 ${WIKI_MARKER}`;
 }
 
@@ -443,10 +443,10 @@ function buildClaudeMdManifest(scope) {
 
   const header = scope === 'global'
     ? '# Wiki — always-loaded context\n\n' +
-      `Pointers to wiki pages marked \`alwaysLoad: true\`. Full content is at \`~/.claude/wiki/\` — read specific pages on demand.\n` +
-      `Full catalog: \`~/.claude/wiki/_index.md\`. Schema + operations: \`~/.claude/wiki/_schema.md\`.\n`
+      `Pointers to wiki pages marked \`alwaysLoad: true\`. Full content is at \`~/memory-wiki/\` — read specific pages on demand.\n` +
+      `Full catalog: \`~/memory-wiki/_index.md\`. Schema + operations: \`~/memory-wiki/_schema.md\`.\n`
     : `# Wiki — project context (${scope})\n\n` +
-      `Pointers to wiki pages under \`~/.claude/wiki/projects/${scope}/**\` marked \`alwaysLoad: true\`.\n`;
+      `Pointers to wiki pages under \`~/memory-wiki/projects/${scope}/**\` marked \`alwaysLoad: true\`.\n`;
 
   let body;
   if (pages.length === 0) {
@@ -634,7 +634,7 @@ function buildProjectContext(projectDir) {
           const content = readSafe(path.join(dir, e.name));
           const { frontmatter } = content ? parseFrontmatter(content) : { frontmatter: {} };
           pages.push({
-            path: `~/.claude/wiki/projects/${matchedProject}/${prefix}${e.name}`,
+            path: `~/memory-wiki/projects/${matchedProject}/${prefix}${e.name}`,
             name: frontmatter.name || e.name.replace('.md', ''),
           });
         }
@@ -804,13 +804,13 @@ function extractPending() {
     '',
     'To extract knowledge from these sessions, run:',
     '```',
-    'node ~/.claude/wiki/scripts/wiki-extract.js --bootstrap',
+    'node ~/memory-wiki/scripts/wiki-extract.js --bootstrap',
     '```',
     '',
     'Then read the output and create/update wiki pages for significant knowledge.',
     'After done, mark all as processed:',
     '```',
-    'node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed',
+    'node ~/memory-wiki/scripts/wiki-extract.js --mark-all-processed',
     '```',
     '',
     '## Pending sessions:',

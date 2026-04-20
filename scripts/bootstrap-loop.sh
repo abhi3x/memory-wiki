@@ -12,7 +12,7 @@
 #                     [--after dream]             # Run wiki-dream.sh after the loop finishes
 #                     [--dry-run]                 # Show what would run
 #
-# Assumes wiki-extract.js is installed at ~/.claude/wiki/scripts/wiki-extract.js
+# Assumes wiki-extract.js is installed at ~/memory-wiki/scripts/wiki-extract.js
 # and a working `claude` CLI is on PATH.
 #
 # Each iteration:
@@ -21,13 +21,13 @@
 #   3. Mark the session as processed
 #   4. Sleep briefly so Ctrl-C has a window to land
 #
-# The prompt given to Claude instructs it to follow ~/.claude/wiki/_schema.md for
+# The prompt given to Claude instructs it to follow ~/memory-wiki/_schema.md for
 # structure, page types, and rules.
 
 set -euo pipefail
 
-EXTRACT="${HOME}/.claude/wiki/scripts/wiki-extract.js"
-DREAM="${HOME}/.claude/wiki/scripts/wiki-dream.sh"
+EXTRACT="${HOME}/memory-wiki/scripts/wiki-extract.js"
+DREAM="${HOME}/memory-wiki/scripts/wiki-dream.sh"
 DRY_RUN=0
 LIMIT=0
 AFTER=""
@@ -80,7 +80,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
-PROMPT='Read the session summary on stdin and update the personal memory wiki per ~/.claude/wiki/_schema.md.
+PROMPT='Read the session summary on stdin and update the personal memory wiki per ~/memory-wiki/_schema.md.
 
 Rules:
 - Create/update pages under global/ or projects/ as the schema directs.
@@ -91,7 +91,7 @@ Rules:
 - Then print a ONE-LINE summary of what changed (created X, updated Y) — nothing else.
 - If you cannot create any pages (e.g. permission blocks), say so clearly and do NOT commit.'
 
-WIKI_DIR="${HOME}/.claude/wiki"
+WIKI_DIR="${HOME}/memory-wiki"
 
 # Resolve "wiki HEAD" used for side-effect detection. Script only marks a session
 # processed when HEAD actually advances — silent failures (blocked writes, no-op
@@ -108,7 +108,7 @@ for s in "${SESSIONS[@]}"; do
 
   HEAD_BEFORE=$(wiki_head)
 
-  # --add-dir makes ~/.claude/wiki a trusted working dir for the subprocess.
+  # --add-dir makes ~/memory-wiki a trusted working dir for the subprocess.
   # --permission-mode bypassPermissions allows the fully-autonomous loop to
   # write the wiki without interactive prompts. The wiki is local-only and
   # under git, so the worst-case cost of a bad ingest is a git reset --hard.

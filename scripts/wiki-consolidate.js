@@ -7,7 +7,7 @@
  * Performs deterministic, safe consolidation of the three memory tiers:
  *
  *   (ii) Prune MEMORY.md entries whose content has been promoted to a wiki
- *        page, leaving a `see ~/.claude/wiki/...` stub in their place.
+ *        page, leaving a `see ~/memory-wiki/...` stub in their place.
  *        Detection: wiki page frontmatter `promoteFromMemory: <filename>`.
  *   (iv) Regenerate CLAUDE.md pointer manifests (delegates to wiki-sync.js).
  *
@@ -30,7 +30,7 @@ const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
 
-const WIKI_ROOT = path.join(os.homedir(), '.claude', 'wiki');
+const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
 const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const SYNC_SCRIPT = path.join(WIKI_ROOT, 'scripts', 'wiki-sync.js');
 

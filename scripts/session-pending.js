@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const PENDING_PATH = path.join(os.homedir(), '.claude', 'wiki', '_pending.jsonl');
+const PENDING_PATH = path.join(os.homedir(), 'memory-wiki', '_pending.jsonl');
 
 function log(msg) {
   process.stderr.write(`[SessionPending] ${msg}\n`);
@@ -43,7 +43,7 @@ async function main() {
     }
 
     // Check if already in processed list
-    const processedPath = path.join(os.homedir(), '.claude', 'wiki', '_processed.json');
+    const processedPath = path.join(os.homedir(), 'memory-wiki', '_processed.json');
     try {
       const processed = JSON.parse(fs.readFileSync(processedPath, 'utf-8'));
       if (processed.sessions && processed.sessions[transcript_path]) {

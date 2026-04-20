@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const WIKI_ROOT = path.join(os.homedir(), '.claude', 'wiki');
+const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
 const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const MAX_LOG_LINES = 20;
 const MAX_CONTEXT_PAGES = 5;
@@ -127,10 +127,10 @@ async function main() {
     const { total, pending } = countPendingSessions();
     ctx.push([
       '## Memory Wiki',
-      `Wiki at ~/.claude/wiki/ | ${total} total sessions | ${pending} pending extraction`,
-      'Run `node ~/.claude/wiki/scripts/wiki-extract.js --list` to see session status.',
+      `Wiki at ~/memory-wiki/ | ${total} total sessions | ${pending} pending extraction`,
+      'Run `node ~/memory-wiki/scripts/wiki-extract.js --list` to see session status.',
       pending > 0
-        ? `**${pending} unprocessed sessions.** Run \`node ~/.claude/wiki/scripts/wiki-extract.js --bootstrap\` to extract knowledge.`
+        ? `**${pending} unprocessed sessions.** Run \`node ~/memory-wiki/scripts/wiki-extract.js --bootstrap\` to extract knowledge.`
         : 'All sessions processed.',
     ].join('\n'));
 

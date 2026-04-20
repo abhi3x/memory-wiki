@@ -21,7 +21,7 @@
 #   3. LLM LINT (claude -p, PROPOSE-ONLY):
 #       (iii) Duplicate pages to merge, oversized pages to split.
 #       (v)   Contradictions, orphan pages, concept gaps, suggested sources.
-#       Written to ~/.claude/wiki/_dream-report-YYYY-MM-DD.md for triage.
+#       Written to ~/memory-wiki/_dream-report-YYYY-MM-DD.md for triage.
 #       Destructive changes land only after human approval.
 #
 # Usage:
@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-WIKI="${HOME}/.claude/wiki"
+WIKI="${HOME}/memory-wiki"
 CONSOLIDATE="${WIKI}/scripts/wiki-consolidate.js"
 EXTRACT="${WIKI}/scripts/wiki-extract.js"
 
@@ -133,7 +133,7 @@ For EACH entry:
 1. Decide if it is worth promoting to the wiki. Worth promoting means: durable knowledge (not session scratch), recurring (shows up more than once across projects), or explicitly marked critical by Abhishek.
 
 2. For entries worth promoting:
-   - Create/update the wiki page under ~/.claude/wiki/ per ~/.claude/wiki/_schema.md.
+   - Create/update the wiki page under ~/memory-wiki/ per ~/memory-wiki/_schema.md.
    - Include `promoteFromMemory: <basename-without-md>` in the frontmatter so a future dream can prune the source stub.
    - Set `alwaysLoad: true` ONLY if this is genuinely critical-in-every-session (identity, non-negotiable rules, core comms). Otherwise leave false.
    - Do NOT modify the source MEMORY.md entry — the next dream cycle will prune it mechanically.
@@ -159,7 +159,7 @@ fi
 # ── Step 3: LLM lint (propose only) ─────────────────────────────────────────
 echo
 echo "── 3. LLM lint — write proposed destructive changes to $REPORT ──"
-LINT_PROMPT="You are running the lint pass of Claude dreams. Inspect ~/.claude/wiki/ and produce a report at ~/.claude/wiki/_dream-report-${DATE}.md.
+LINT_PROMPT="You are running the lint pass of Claude dreams. Inspect ~/memory-wiki/ and produce a report at ~/memory-wiki/_dream-report-${DATE}.md.
 
 Rules:
 - Do NOT apply any destructive changes. Write proposals only.

@@ -35,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const WIKI_ROOT = path.join(os.homedir(), '.claude', 'wiki');
+const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
 const CLAUDE_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const PROCESSED_PATH = path.join(WIKI_ROOT, '_processed.json');
 const MAX_TURNS_PER_SESSION = 100;
@@ -364,7 +364,7 @@ function cmdBootstrap(filters) {
   console.log('5. Troubleshooting solutions found → troubleshooting/');
   console.log('6. Project context (architecture, conventions) → projects/*/context/');
   console.log('');
-  console.log('After creating pages, run: node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed');
+  console.log('After creating pages, run: node ~/memory-wiki/scripts/wiki-extract.js --mark-all-processed');
   console.log('');
 
   for (const [project, files] of Object.entries(byProject)) {

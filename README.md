@@ -31,7 +31,7 @@ The wiki plugs into Claude Code's native memory loading via three layers:
 | 1 | `~/.claude/CLAUDE.md` | Every session, every cwd | Pointer manifest to `alwaysLoad: true` wiki pages + your hand-curated hard rules | `wiki-sync.js` (marker block) + you (outside the block) |
 | 1 | `<project>/CLAUDE.md` | That project only | Pointer manifest to `wiki/projects/<name>/**` pages + project rules | `wiki-sync.js` + you |
 | 2 | `~/.claude/projects/<cwd>/memory/MEMORY.md` | That cwd only | Dynamic Claude-recorded observations + `see wiki/...` stubs for promoted content | Claude (auto-memory) + `wiki-consolidate.js` (pruning) |
-| 3 | `~/.claude/wiki/**` | Source of truth | Full content: synthesized, cross-referenced, versioned | Claude (during dreams + ingest) |
+| 3 | `~/memory-wiki/**` | Source of truth | Full content: synthesized, cross-referenced, versioned | Claude (during dreams + ingest) |
 
 **Why this works:**
 - **CLAUDE.md carries pointers, not content** — small (~1–3 KB), auto-loaded by Claude Code at every session start, zero context bloat.
@@ -44,7 +44,7 @@ The wiki plugs into Claude Code's native memory loading via three layers:
 ~/.claude/CLAUDE.md       # Global pointer manifest (auto-loaded everywhere)
 <project>/CLAUDE.md       # Per-project pointer manifest (auto-loaded in that project)
 
-~/.claude/wiki/
+~/memory-wiki/
   _schema.md              # Rules, frontmatter, dreams workflow
   _index.md               # Master catalog of all pages
   _log.md                 # Chronological operations record
@@ -82,11 +82,11 @@ Pipeline:
    - Prune MEMORY.md entries already promoted to wiki — replace with a `see wiki/...` stub.
    - Regenerate pointer manifests in `~/.claude/CLAUDE.md` and every project's `CLAUDE.md`.
 2. **LLM promotion pass** (auto-applied): Claude reads unpromoted MEMORY.md entries, creates wiki pages for durable ones, stamps `promoteFromMemory: <basename>` in frontmatter so the next dream prunes the source.
-3. **LLM lint pass** (PROPOSE-ONLY): Writes proposed destructive changes (merges, splits, deletes) to `~/.claude/wiki/_dream-report-YYYY-MM-DD.md`. Safe non-destructive fixes (missing `[[related]]` links, frontmatter normalization) are applied directly. You approve destructive changes manually.
+3. **LLM lint pass** (PROPOSE-ONLY): Writes proposed destructive changes (merges, splits, deletes) to `~/memory-wiki/_dream-report-YYYY-MM-DD.md`. Safe non-destructive fixes (missing `[[related]]` links, frontmatter normalization) are applied directly. You approve destructive changes manually.
 
 **Safety:**
-- Wiki is under git (`~/.claude/wiki/.git/`). Worst case: `git reset --hard`.
-- LLM subprocesses run with `--add-dir ~/.claude/wiki --permission-mode bypassPermissions` — trusted because the wiki is local-only and versioned.
+- Wiki is under git (`~/memory-wiki/.git/`). Worst case: `git reset --hard`.
+- LLM subprocesses run with `--add-dir ~/memory-wiki --permission-mode bypassPermissions` — trusted because the wiki is local-only and versioned.
 - Destructive changes never auto-apply. Only pointers + manifests + stubs regen automatically.
 
 ## Quick Start
@@ -95,15 +95,15 @@ Pipeline:
 
 ```bash
 # Create the wiki directory
-mkdir -p ~/.claude/wiki/{global/{entities,decisions,patterns,preferences,troubleshooting},projects,scripts}
+mkdir -p ~/memory-wiki/{global/{entities,decisions,patterns,preferences,troubleshooting},projects,scripts}
 
 # Copy scripts and schema
-cp scripts/* ~/.claude/wiki/scripts/
-cp _schema.md ~/.claude/wiki/_schema.md
-cp _index.md ~/.claude/wiki/_index.md
-cp _log.md ~/.claude/wiki/_log.md
+cp scripts/* ~/memory-wiki/scripts/
+cp _schema.md ~/memory-wiki/_schema.md
+cp _index.md ~/memory-wiki/_index.md
+cp _log.md ~/memory-wiki/_log.md
 
-chmod +x ~/.claude/wiki/scripts/*.js
+chmod +x ~/memory-wiki/scripts/*.js
 ```
 
 ### 2. Add hooks to settings.json
@@ -119,7 +119,7 @@ Add to your `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "node ~/.claude/wiki/scripts/session-pending.js"
+            "command": "node ~/memory-wiki/scripts/session-pending.js"
           }
         ]
       }
@@ -134,17 +134,17 @@ If you already have Claude Code memory files (`user_*.md`, `feedback_*.md`, etc.
 
 ```bash
 # Preview what would be migrated
-node ~/.claude/wiki/scripts/wiki-sync.js --migrate --dry-run
+node ~/memory-wiki/scripts/wiki-sync.js --migrate --dry-run
 
 # Run migration — moves memory files to wiki, updates index, re-syncs MEMORY.md
-node ~/.claude/wiki/scripts/wiki-sync.js --migrate
+node ~/memory-wiki/scripts/wiki-sync.js --migrate
 ```
 
 ### 4. Bootstrap from existing conversations
 
 ```bash
 # See all your sessions with status
-node ~/.claude/wiki/scripts/wiki-extract.js --list
+node ~/memory-wiki/scripts/wiki-extract.js --list
 ```
 
 **Recommended — iterative bootstrap (handles long histories without blowing Claude's context):**
@@ -153,10 +153,10 @@ Synthesizing every past session in a single Claude turn doesn't scale — a few 
 
 ```bash
 # Loop: one session per Claude invocation
-for s in $(node ~/.claude/wiki/scripts/wiki-extract.js --list-pending); do
-  node ~/.claude/wiki/scripts/wiki-extract.js --session "$s" | \
-    claude -p "Read this session and update the wiki per ~/.claude/wiki/_schema.md"
-  node ~/.claude/wiki/scripts/wiki-extract.js --mark-processed "$s"
+for s in $(node ~/memory-wiki/scripts/wiki-extract.js --list-pending); do
+  node ~/memory-wiki/scripts/wiki-extract.js --session "$s" | \
+    claude -p "Read this session and update the wiki per ~/memory-wiki/_schema.md"
+  node ~/memory-wiki/scripts/wiki-extract.js --mark-processed "$s"
 done
 ```
 
@@ -166,7 +166,7 @@ Each iteration fits in one context window, synthesizes incrementally, commits (i
 
 ```bash
 # Exclude any project dir whose name contains "partner"
-node ~/.claude/wiki/scripts/wiki-extract.js --list-pending --exclude-project partner
+node ~/memory-wiki/scripts/wiki-extract.js --list-pending --exclude-project partner
 ```
 
 `--exclude-project` and `--include-project` are both repeatable and match by substring against the sanitized project directory name (the subdirectories of `~/.claude/projects/`).
@@ -174,7 +174,7 @@ node ~/.claude/wiki/scripts/wiki-extract.js --list-pending --exclude-project par
 **Single-dump alternative (only for small histories):**
 
 ```bash
-node ~/.claude/wiki/scripts/wiki-extract.js --bootstrap
+node ~/memory-wiki/scripts/wiki-extract.js --bootstrap
 ```
 
 Dumps everything unprocessed into one output blob. Only viable if your total history fits in one Claude context.
@@ -183,10 +183,10 @@ Dumps everything unprocessed into one output blob. Only viable if your total his
 
 ```bash
 # Mark everything processed (declare bootstrap bankruptcy — start fresh from today)
-node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed
+node ~/memory-wiki/scripts/wiki-extract.js --mark-all-processed
 
 # Or with filters
-node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed --exclude-project partner
+node ~/memory-wiki/scripts/wiki-extract.js --mark-all-processed --exclude-project partner
 ```
 
 ## Commands
@@ -297,12 +297,12 @@ The sync script injects a pointer manifest into both global and per-project `CLA
 <!-- wiki-pointer-manifest -->
 # Wiki — always-loaded context
 
-Pointers to wiki pages marked `alwaysLoad: true`. Full content is at ~/.claude/wiki/ — read specific pages on demand.
+Pointers to wiki pages marked `alwaysLoad: true`. Full content is at ~/memory-wiki/ — read specific pages on demand.
 
 Last synced: 2026-04-20 · 8 page(s)
 
 ## Preferences
-- `~/.claude/wiki/global/preferences/abhishek-time-scale.md` — Never quote estimates in weeks. 1:1 substitution to hours.
+- `~/memory-wiki/global/preferences/abhishek-time-scale.md` — Never quote estimates in weeks. 1:1 substitution to hours.
 - ...
 <!-- wiki-pointer-manifest -->
 ```
@@ -313,10 +313,10 @@ Run sync manually or via cron:
 
 ```bash
 # Manual
-node ~/.claude/wiki/scripts/wiki-sync.js
+node ~/memory-wiki/scripts/wiki-sync.js
 
 # Cron (nightly)
-42 23 * * * node ~/.claude/wiki/scripts/wiki-sync.js >> ~/.claude/wiki/_sync.log 2>&1
+42 23 * * * node ~/memory-wiki/scripts/wiki-sync.js >> ~/memory-wiki/_sync.log 2>&1
 ```
 
 ## Why markdown over embeddings?
