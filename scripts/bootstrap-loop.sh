@@ -84,7 +84,17 @@ Rules:
 - Skip trivial/transient content.
 - Redact any credentials or secrets.
 - When done, commit to git with message "ingest: <session-id> (<N> pages touched)" if the wiki is a git repo.
-- Then print a ONE-LINE summary of what changed (created X, updated Y) — nothing else.'
+- Then print a ONE-LINE summary of what changed (created X, updated Y) — nothing else.
+- If you cannot create any pages (e.g. permission blocks), say so clearly and do NOT commit.'
+
+WIKI_DIR="${HOME}/.claude/wiki"
+
+# Resolve "wiki HEAD" used for side-effect detection. Script only marks a session
+# processed when HEAD actually advances — silent failures (blocked writes, no-op
+# runs) leave the session pending for retry rather than being marked done.
+wiki_head() {
+  git -C "$WIKI_DIR" rev-parse HEAD 2>/dev/null || echo "no-git"
+}
 
 INDEX=0
 for s in "${SESSIONS[@]}"; do
@@ -92,8 +102,22 @@ for s in "${SESSIONS[@]}"; do
   echo
   echo "─── [$INDEX/$COUNT] $(basename "$s") ───"
 
-  if ! node "$EXTRACT" --session "$s" | claude -p "$PROMPT"; then
+  HEAD_BEFORE=$(wiki_head)
+
+  # --add-dir makes ~/.claude/wiki a trusted working dir for the subprocess.
+  # --permission-mode bypassPermissions allows the fully-autonomous loop to
+  # write the wiki without interactive prompts. The wiki is local-only and
+  # under git, so the worst-case cost of a bad ingest is a git reset --hard.
+  if ! node "$EXTRACT" --session "$s" | \
+       claude -p --add-dir "$WIKI_DIR" --permission-mode bypassPermissions "$PROMPT"; then
     echo "WARN: claude invocation failed for $s — leaving unprocessed, moving on." >&2
+    sleep 1
+    continue
+  fi
+
+  HEAD_AFTER=$(wiki_head)
+  if [[ "$HEAD_BEFORE" == "$HEAD_AFTER" ]]; then
+    echo "WARN: wiki HEAD did not advance for $s — no commit made. Leaving unprocessed for retry." >&2
     sleep 1
     continue
   fi
