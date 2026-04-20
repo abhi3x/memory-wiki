@@ -9,6 +9,7 @@
 # Usage:
 #   bootstrap-loop.sh [--exclude-project <substr>]... [--include-project <substr>]...
 #                     [--limit N]                 # Stop after N sessions (useful for piloting)
+#                     [--after dream]             # Run wiki-dream.sh after the loop finishes
 #                     [--dry-run]                 # Show what would run
 #
 # Assumes wiki-extract.js is installed at ~/.claude/wiki/scripts/wiki-extract.js
@@ -26,14 +27,17 @@
 set -euo pipefail
 
 EXTRACT="${HOME}/.claude/wiki/scripts/wiki-extract.js"
+DREAM="${HOME}/.claude/wiki/scripts/wiki-dream.sh"
 DRY_RUN=0
 LIMIT=0
+AFTER=""
 FILTER_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --limit) LIMIT="$2"; shift 2 ;;
+    --after) AFTER="$2"; shift 2 ;;
     --exclude-project|--include-project) FILTER_ARGS+=("$1" "$2"); shift 2 ;;
     -h|--help)
       sed -n '3,25p' "$0"
@@ -128,3 +132,13 @@ done
 
 echo
 echo "Done. Processed $INDEX session(s)."
+
+if [[ "$AFTER" == "dream" ]]; then
+  if [[ -x "$DREAM" ]]; then
+    echo
+    echo "── Post-loop: running dream ──"
+    "$DREAM" "${FILTER_ARGS[@]}"
+  else
+    echo "WARN: --after dream requested but $DREAM not executable" >&2
+  fi
+fi
