@@ -8,10 +8,24 @@
  * that Claude can read and synthesize into wiki pages.
  *
  * Usage:
- *   node wiki-extract.js --bootstrap          # Process all unprocessed sessions
- *   node wiki-extract.js --session <path>     # Process single JSONL file
- *   node wiki-extract.js --list               # List all sessions with status
- *   node wiki-extract.js --mark-processed <path>  # Mark a session as processed
+ *   node wiki-extract.js --list                         # List all sessions with status
+ *   node wiki-extract.js --list-pending                 # Print pending session paths (one per line)
+ *   node wiki-extract.js --session <path>               # Process single JSONL file
+ *   node wiki-extract.js --bootstrap                    # Process all unprocessed sessions (single dump — may blow context)
+ *   node wiki-extract.js --mark-processed <path>        # Mark a session as processed
+ *   node wiki-extract.js --mark-all-processed           # Mark all sessions as processed
+ *
+ * Project filters (apply to --list, --list-pending, --bootstrap, --mark-all-processed):
+ *   --include-project <substr>   Only include sessions whose sanitized project dir contains <substr>.
+ *                                May be repeated. If used, ALL other sessions are excluded.
+ *   --exclude-project <substr>   Skip sessions whose sanitized project dir contains <substr>.
+ *                                May be repeated. Useful when multiple users share one machine.
+ *
+ * Iterative bootstrap (recommended for long histories — avoids blowing Claude's context):
+ *   for s in $(node wiki-extract.js --list-pending --exclude-project suhani); do
+ *     node wiki-extract.js --session "$s" | claude -p "Update the wiki per CLAUDE.md"
+ *     node wiki-extract.js --mark-processed "$s"
+ *   done
  *
  * Output goes to stdout. Claude reads it and creates wiki pages.
  * The script parses. The LLM synthesizes.
@@ -254,13 +268,36 @@ function findAllSessions() {
   });
 }
 
+// ── Project filters ──────────────────────────────────────────────────────────
+
+function applyProjectFilters(sessions, { include, exclude }) {
+  return sessions.filter(sessionPath => {
+    const dirName = path.basename(path.dirname(sessionPath));
+    if (include.length > 0 && !include.some(p => dirName.includes(p))) return false;
+    if (exclude.some(p => dirName.includes(p))) return false;
+    return true;
+  });
+}
+
+function parseProjectFilters(args) {
+  const include = [];
+  const exclude = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--include-project' && args[i + 1]) { include.push(args[i + 1]); i++; }
+    else if (args[i] === '--exclude-project' && args[i + 1]) { exclude.push(args[i + 1]); i++; }
+  }
+  return { include, exclude };
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
-function cmdList() {
-  const sessions = findAllSessions();
+function cmdList(filters) {
+  const all = findAllSessions();
+  const sessions = applyProjectFilters(all, filters);
   const processed = getProcessed();
+  const skipped = all.length - sessions.length;
 
-  console.log(`Found ${sessions.length} sessions:\n`);
+  console.log(`Found ${sessions.length} sessions${skipped ? ` (${skipped} filtered out)` : ''}:\n`);
   console.log('Status    | Date       | Turns | Size     | Project');
   console.log('-'.repeat(70));
 
@@ -284,8 +321,18 @@ function cmdList() {
   console.log(`\n${pending.length} pending, ${sessions.length - pending.length} processed`);
 }
 
-function cmdBootstrap() {
-  const sessions = findAllSessions();
+function cmdListPending(filters) {
+  const all = findAllSessions();
+  const sessions = applyProjectFilters(all, filters);
+  const processed = getProcessed();
+  for (const s of sessions) {
+    if (!processed.sessions[s]) console.log(s);
+  }
+}
+
+function cmdBootstrap(filters) {
+  const all = findAllSessions();
+  const sessions = applyProjectFilters(all, filters);
   const processed = getProcessed();
   const pending = sessions.filter(s => !processed.sessions[s]);
 
@@ -365,13 +412,15 @@ function cmdSession(sessionPath) {
   console.log(formatSessionSummary(meta, turns));
 }
 
-function cmdMarkProcessed(sessionPath) {
+function cmdMarkProcessed(sessionPath, filters) {
   if (sessionPath === '--all' || sessionPath === 'all') {
-    const sessions = findAllSessions();
+    const all = findAllSessions();
+    const sessions = applyProjectFilters(all, filters);
     for (const s of sessions) {
       markProcessed(s);
     }
-    log(`Marked all ${sessions.length} sessions as processed`);
+    const skipped = all.length - sessions.length;
+    log(`Marked ${sessions.length} sessions as processed${skipped ? ` (${skipped} filtered out)` : ''}`);
   } else {
     if (!fs.existsSync(sessionPath)) {
       log(`File not found: ${sessionPath}`);
@@ -386,31 +435,46 @@ function cmdMarkProcessed(sessionPath) {
 
 const args = process.argv.slice(2);
 const command = args[0];
+const filters = parseProjectFilters(args);
 
 try {
   switch (command) {
     case '--bootstrap':
-      cmdBootstrap();
+      cmdBootstrap(filters);
       break;
     case '--session':
       cmdSession(args[1]);
       break;
     case '--list':
-      cmdList();
+      cmdList(filters);
+      break;
+    case '--list-pending':
+      cmdListPending(filters);
       break;
     case '--mark-processed':
-      cmdMarkProcessed(args[1]);
+      cmdMarkProcessed(args[1], filters);
       break;
     case '--mark-all-processed':
-      cmdMarkProcessed('all');
+      cmdMarkProcessed('all', filters);
       break;
     default:
       console.log('Usage:');
-      console.log('  node wiki-extract.js --bootstrap              # Extract all unprocessed sessions');
-      console.log('  node wiki-extract.js --session <path.jsonl>   # Extract single session');
       console.log('  node wiki-extract.js --list                   # List sessions and status');
+      console.log('  node wiki-extract.js --list-pending           # Print pending session paths (one per line)');
+      console.log('  node wiki-extract.js --session <path.jsonl>   # Extract single session');
+      console.log('  node wiki-extract.js --bootstrap              # Extract ALL unprocessed (single dump — may blow context)');
       console.log('  node wiki-extract.js --mark-processed <path>  # Mark session as processed');
       console.log('  node wiki-extract.js --mark-all-processed     # Mark all sessions as processed');
+      console.log('');
+      console.log('Project filters (repeatable):');
+      console.log('  --include-project <substr>   Only include sessions whose dir contains <substr>');
+      console.log('  --exclude-project <substr>   Skip sessions whose dir contains <substr>');
+      console.log('');
+      console.log('Iterative bootstrap (recommended — see README):');
+      console.log('  for s in $(node wiki-extract.js --list-pending --exclude-project <her-dir>); do');
+      console.log('    node wiki-extract.js --session "$s" | claude -p "Update the wiki per CLAUDE.md"');
+      console.log('    node wiki-extract.js --mark-processed "$s"');
+      console.log('  done');
       break;
   }
 } catch (err) {
