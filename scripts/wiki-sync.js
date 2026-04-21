@@ -19,18 +19,20 @@
  *   --exclude-project <substr>   Skip project dirs whose name contains <substr>
  *
  * Designed to run via cron:
- *   42 23 * * * node ~/.claude/wiki/scripts/wiki-sync.js --exclude-project partner 2>&1 >> ~/.claude/wiki/_sync.log
+ *   42 23 * * * node ~/memory-wiki/scripts/wiki-sync.js --exclude-project partner 2>&1 >> ~/memory-wiki/_sync.log
  */
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const WIKI_ROOT = path.join(os.homedir(), '.claude', 'wiki');
+const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
 const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
+const GLOBAL_CLAUDE_MD = path.join(os.homedir(), '.claude', 'CLAUDE.md');
 const PROCESSED_PATH = path.join(WIKI_ROOT, '_processed.json');
 const PENDING_EXTRACTION_PATH = path.join(WIKI_ROOT, '_pending-extraction.md');
 const WIKI_MARKER = '<!-- memory-wiki-pointer -->';
+const CLAUDE_MD_MARKER = '<!-- wiki-pointer-manifest -->';
 
 function log(msg) {
   const ts = new Date().toISOString().slice(0, 19);
@@ -362,86 +364,236 @@ function updateIndex(migratedPages) {
   log(`Updated _index.md with ${migratedPages.length} new entries`);
 }
 
-// ── Build the wiki pointer block ─────────────────────────────────────────────
+// ── MEMORY.md pointer (shrunk) ───────────────────────────────────────────────
+//
+// MEMORY.md holds only dynamic auto-memory observations now. The full wiki
+// pointer manifest lives in CLAUDE.md (injected by syncGlobalClaudeMd /
+// syncProjectClaudeMds). MEMORY.md just carries a one-line nudge.
 
-function buildWikiPointer(projectDir) {
-  // Read the index to get page counts
-  const index = readSafe(path.join(WIKI_ROOT, '_index.md'));
+function buildWikiPointer(/* projectDir */) {
+  return `${WIKI_MARKER}
+# Memory
 
-  const counts = { entities: 0, decisions: 0, patterns: 0, preferences: 0, troubleshooting: 0 };
-
-  if (index) {
-    const lines = index.split('\n');
-    for (const line of lines) {
-      if (line.startsWith('### Entities')) counts.entities = extractCount(line);
-      if (line.startsWith('### Decisions')) counts.decisions = extractCount(line);
-      if (line.startsWith('### Patterns')) counts.patterns = extractCount(line);
-      if (line.startsWith('### Preferences')) counts.preferences = extractCount(line);
-      if (line.startsWith('### Troubleshooting')) counts.troubleshooting = extractCount(line);
-    }
-  }
-
-  // Count project wikis
-  const projectsDir = path.join(WIKI_ROOT, 'projects');
-  let projectCount = 0;
-  try {
-    projectCount = fs.readdirSync(projectsDir).filter(d =>
-      fs.statSync(path.join(projectsDir, d)).isDirectory()
-    ).length;
-  } catch { /* no projects yet */ }
-
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
-
-  // Build summary lines
-  const summaryLines = [];
-  if (counts.preferences > 0) summaryLines.push(`- ${counts.preferences} preferences (coding style, tool choices)`);
-  if (counts.decisions > 0) summaryLines.push(`- ${counts.decisions} decisions (architectural choices + rationale)`);
-  if (counts.patterns > 0) summaryLines.push(`- ${counts.patterns} patterns (recurring solutions)`);
-  if (counts.entities > 0) summaryLines.push(`- ${counts.entities} entities (tools, services, APIs)`);
-  if (counts.troubleshooting > 0) summaryLines.push(`- ${counts.troubleshooting} troubleshooting (known issues + fixes)`);
-  if (projectCount > 0) summaryLines.push(`- ${projectCount} project-specific wikis`);
-
-  const summary = summaryLines.length > 0
-    ? summaryLines.join('\n')
-    : '- No pages yet. Create pages as you learn things worth keeping.';
-
-  // Find project-specific wiki pages
-  const projectContext = buildProjectContext(projectDir);
-
-  // Load critical preferences to inline
-  const criticalPrefs = loadCriticalPreferences();
-
-  let pointer = `${WIKI_MARKER}
-# Memory Wiki
-
-You have a persistent knowledge wiki at \`~/.claude/wiki/\`.
-Read \`~/.claude/wiki/_index.md\` for the full index when you need to find something.
-Read \`~/.claude/wiki/_schema.md\` for rules on creating/updating pages.
-
-## What you know (${total} pages)
-${summary}`;
-
-  // Inline critical preferences (always in context)
-  if (criticalPrefs.length > 0) {
-    pointer += '\n\n## Critical preferences (always loaded)\n';
-    pointer += criticalPrefs.join('\n');
-  }
-
-  // Add project-specific pages if detected
-  if (projectContext) {
-    pointer += '\n\n## Project context — READ THESE FIRST\n';
-    pointer += projectContext;
-  }
-
-  pointer += `
-
-## How to use
-- Read specific wiki pages when the conversation topic matches what you know
-- After significant conversations, create/update wiki pages
-- Check pending: \`node ~/.claude/wiki/scripts/wiki-extract.js --list\`
+Wiki pointers live in \`~/.claude/CLAUDE.md\` (global) and \`<project>/CLAUDE.md\` (per-project).
+This file holds only dynamic auto-memory — things Claude noticed during sessions that aren't yet worth promoting to the wiki.
+Canonical content is at \`~/memory-wiki/\`. Index: \`~/memory-wiki/_index.md\`. Schema: \`~/memory-wiki/_schema.md\`.
 ${WIKI_MARKER}`;
+}
 
-  return pointer;
+// ── Page walk + alwaysLoad collection ────────────────────────────────────────
+
+function walkMd(dir, onFile) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walkMd(full, onFile);
+      else if (e.isFile() && e.name.endsWith('.md') && !e.name.startsWith('_')) onFile(full);
+    }
+  } catch { /* skip */ }
+}
+
+/**
+ * Returns pages with `alwaysLoad: true` in frontmatter, grouped by wiki type.
+ * @param {string} scope 'global' → scans wiki/global/**; project slug → scans wiki/projects/<slug>/**
+ */
+function collectAlwaysLoadPages(scope) {
+  const root = scope === 'global'
+    ? path.join(WIKI_ROOT, 'global')
+    : path.join(WIKI_ROOT, 'projects', scope);
+
+  const pages = [];
+  walkMd(root, (filePath) => {
+    const content = readSafe(filePath);
+    if (!content) return;
+    const { frontmatter } = parseFrontmatter(content);
+    if (String(frontmatter.alwaysLoad).trim() !== 'true') return;
+
+    // Pull a one-line description: prefer frontmatter.description, else Summary first line.
+    let desc = frontmatter.description || '';
+    if (!desc) {
+      const match = content.match(/^## Summary\s*\n([^\n]+)/m);
+      if (match) desc = match[1].trim();
+    }
+
+    pages.push({
+      id: frontmatter.id || path.basename(filePath, '.md'),
+      type: frontmatter.type || 'page',
+      absPath: filePath,
+      desc: desc.slice(0, 180),
+    });
+  });
+
+  // Sort by type, then id — stable output
+  const typeOrder = ['preference', 'decision', 'pattern', 'entity', 'context', 'troubleshooting', 'concept', 'area', 'person'];
+  pages.sort((a, b) => {
+    const ai = typeOrder.indexOf(a.type), bi = typeOrder.indexOf(b.type);
+    if (ai !== bi) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    return a.id.localeCompare(b.id);
+  });
+
+  return pages;
+}
+
+// ── CLAUDE.md manifest builder ───────────────────────────────────────────────
+
+function buildClaudeMdManifest(scope) {
+  const pages = collectAlwaysLoadPages(scope);
+  const date = new Date().toISOString().slice(0, 10);
+
+  const header = scope === 'global'
+    ? '# Wiki — always-loaded context\n\n' +
+      `Pointers to wiki pages marked \`alwaysLoad: true\`. Full content is at \`~/memory-wiki/\` — read specific pages on demand.\n` +
+      `Full catalog: \`~/memory-wiki/_index.md\`. Schema + operations: \`~/memory-wiki/_schema.md\`.\n`
+    : `# Wiki — project context (${scope})\n\n` +
+      `Pointers to wiki pages under \`~/memory-wiki/projects/${scope}/**\` marked \`alwaysLoad: true\`.\n`;
+
+  let body;
+  if (pages.length === 0) {
+    body = '_No pages flagged `alwaysLoad: true` yet. Set the flag in page frontmatter to promote here._';
+  } else {
+    // Group by type
+    const byType = {};
+    for (const p of pages) {
+      if (!byType[p.type]) byType[p.type] = [];
+      byType[p.type].push(p);
+    }
+    // Plural labels (avoid naïve `+s` → "entitys")
+    const plural = {
+      preference: 'Preferences', decision: 'Decisions', pattern: 'Patterns',
+      entity: 'Entities', context: 'Context', troubleshooting: 'Troubleshooting',
+      concept: 'Concepts', area: 'Areas', person: 'People', page: 'Pages',
+    };
+    const sections = [];
+    for (const [type, items] of Object.entries(byType)) {
+      const label = plural[type] || (type.charAt(0).toUpperCase() + type.slice(1));
+      sections.push(`## ${label}`);
+      for (const p of items) {
+        const suffix = p.desc ? ` — ${p.desc}` : '';
+        sections.push(`- \`${p.absPath}\`${suffix}`);
+      }
+      sections.push('');
+    }
+    body = sections.join('\n').trim();
+  }
+
+  return `${CLAUDE_MD_MARKER}\n${header}\nLast synced: ${date} · ${pages.length} page(s)\n\n${body}\n${CLAUDE_MD_MARKER}`;
+}
+
+// ── Inject manifest into a CLAUDE.md (marker-block replacement) ──────────────
+
+function injectIntoClaudeMd(filePath, manifest) {
+  const existing = readSafe(filePath);
+
+  if (existing === null) {
+    // Create file with manifest only. Don't fabricate other content.
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, manifest + '\n', 'utf-8');
+    return 'created';
+  }
+
+  if (existing.includes(CLAUDE_MD_MARKER)) {
+    const markerRegex = new RegExp(
+      `${escapeRegex(CLAUDE_MD_MARKER)}[\\s\\S]*?${escapeRegex(CLAUDE_MD_MARKER)}`,
+      'g'
+    );
+    const updated = existing.replace(markerRegex, manifest);
+    if (updated === existing) return 'unchanged';
+    fs.writeFileSync(filePath, updated, 'utf-8');
+    return 'updated';
+  }
+
+  // Marker not present — append to end so we don't disturb user content.
+  const sep = existing.endsWith('\n') ? '\n' : '\n\n';
+  fs.writeFileSync(filePath, existing + sep + manifest + '\n', 'utf-8');
+  return 'appended';
+}
+
+// ── Map sanitized ~/.claude/projects/<dir> → real filesystem cwd ────────────
+
+function getCwdForProjectDir(sanitizedDirPath) {
+  // Walk recursively, find any JSONL entry with a cwd field whose path exists.
+  const visit = (dir) => {
+    try {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          const hit = visit(full);
+          if (hit) return hit;
+        } else if (e.isFile() && e.name.endsWith('.jsonl')) {
+          const lines = fs.readFileSync(full, 'utf-8').split('\n');
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const entry = JSON.parse(line);
+              if (entry.cwd && fs.existsSync(entry.cwd)) return entry.cwd;
+            } catch { /* skip */ }
+          }
+        }
+      }
+    } catch { /* skip */ }
+    return null;
+  };
+
+  const fromJsonl = visit(sanitizedDirPath);
+  if (fromJsonl) return fromJsonl;
+
+  // Fallback: reverse the sanitization heuristically.
+  // `-Users-abhisheksuhani-abhishek_work-embeddai_repo` → `/Users/abhisheksuhani/abhishek_work/embeddai_repo`.
+  // Dashes inside real dirnames (e.g. `abhishek-work`) are ambiguous — we accept that and fail gracefully.
+  const name = path.basename(sanitizedDirPath);
+  const guess = '/' + name.replace(/^-/, '').replace(/-/g, '/');
+  if (fs.existsSync(guess)) return guess;
+  return null;
+}
+
+// ── syncGlobalClaudeMd + syncProjectClaudeMds ───────────────────────────────
+
+function syncGlobalClaudeMd() {
+  const manifest = buildClaudeMdManifest('global');
+  const result = injectIntoClaudeMd(GLOBAL_CLAUDE_MD, manifest);
+  log(`Global ~/.claude/CLAUDE.md: ${result}`);
+  return result;
+}
+
+function syncProjectClaudeMds(filters = { include: [], exclude: [] }) {
+  const projectsDir = path.join(WIKI_ROOT, 'projects');
+  let wikiProjects = [];
+  try {
+    wikiProjects = fs.readdirSync(projectsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory()).map(d => d.name);
+  } catch { return 0; }
+
+  let synced = 0;
+  for (const wp of wikiProjects) {
+    // Find the sanitized project dir under ~/.claude/projects that maps to this wiki project
+    let cwd = null;
+    try {
+      const candidates = fs.readdirSync(CLAUDE_PROJECTS, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .filter(d => {
+          if (filters.include.length > 0 && !filters.include.some(p => d.name.includes(p))) return false;
+          if (filters.exclude.some(p => d.name.includes(p))) return false;
+          return d.name.includes(wp) || d.name.includes(wp.replace(/-/g, ''));
+        });
+      for (const c of candidates) {
+        const resolved = getCwdForProjectDir(path.join(CLAUDE_PROJECTS, c.name));
+        if (resolved) { cwd = resolved; break; }
+      }
+    } catch { /* skip */ }
+
+    if (!cwd) {
+      log(`Skipping wiki project '${wp}' — could not resolve cwd`);
+      continue;
+    }
+
+    const claudeMdPath = path.join(cwd, 'CLAUDE.md');
+    const manifest = buildClaudeMdManifest(wp);
+    const result = injectIntoClaudeMd(claudeMdPath, manifest);
+    log(`Project CLAUDE.md (${wp} → ${claudeMdPath}): ${result}`);
+    synced++;
+  }
+  return synced;
 }
 
 function buildProjectContext(projectDir) {
@@ -482,7 +634,7 @@ function buildProjectContext(projectDir) {
           const content = readSafe(path.join(dir, e.name));
           const { frontmatter } = content ? parseFrontmatter(content) : { frontmatter: {} };
           pages.push({
-            path: `~/.claude/wiki/projects/${matchedProject}/${prefix}${e.name}`,
+            path: `~/memory-wiki/projects/${matchedProject}/${prefix}${e.name}`,
             name: frontmatter.name || e.name.replace('.md', ''),
           });
         }
@@ -652,13 +804,13 @@ function extractPending() {
     '',
     'To extract knowledge from these sessions, run:',
     '```',
-    'node ~/.claude/wiki/scripts/wiki-extract.js --bootstrap',
+    'node ~/memory-wiki/scripts/wiki-extract.js --bootstrap',
     '```',
     '',
     'Then read the output and create/update wiki pages for significant knowledge.',
     'After done, mark all as processed:',
     '```',
-    'node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed',
+    'node ~/memory-wiki/scripts/wiki-extract.js --mark-all-processed',
     '```',
     '',
     '## Pending sessions:',
@@ -709,17 +861,24 @@ try {
       log(`${dryRun ? 'Would migrate' : 'Migrated'} ${migrated.length} files, skipped ${skipped.length}`);
     }
 
-    // After migration, run sync to update MEMORY.md pointers
+    // After migration, run the full 3-surface sync (global + project CLAUDE.md, MEMORY.md stub)
     if (!dryRun) {
-      const synced = syncMemoryFiles(filters);
-      log(`Synced wiki pointer to ${synced} project MEMORY.md files`);
+      syncGlobalClaudeMd();
+      const projSynced = syncProjectClaudeMds(filters);
+      const memSynced = syncMemoryFiles(filters);
+      log(`Post-migrate: ${projSynced} project CLAUDE.md + ${memSynced} MEMORY.md stubs synced`);
     }
   }
 
   if (!doMigrate) {
     if (!extractOnly) {
-      const synced = syncMemoryFiles(filters);
-      log(`Synced wiki pointer to ${synced} project MEMORY.md files`);
+      // Three sync surfaces — keep them in lockstep.
+      syncGlobalClaudeMd();
+      const projSynced = syncProjectClaudeMds(filters);
+      log(`Synced wiki pointer manifest into ${projSynced} project CLAUDE.md file(s)`);
+
+      const memSynced = syncMemoryFiles(filters);
+      log(`Synced shrunk MEMORY.md stub into ${memSynced} project memory file(s)`);
     }
 
     if (!syncOnly) {

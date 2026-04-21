@@ -21,6 +21,12 @@
  *   --exclude-project <substr>   Skip sessions whose sanitized project dir contains <substr>.
  *                                May be repeated. Useful when multiple users share one machine.
  *
+ * Size filters (apply to --list, --list-pending, --bootstrap):
+ *   --min-turns N                Skip sessions with fewer than N user turns. Default: 0 (no filter).
+ *                                Sessions with 0 or 1 turns are typically trivial (skill-injections, pings)
+ *                                and waste a full claude -p round-trip — recommend --min-turns 3 for bootstrap.
+ *   --min-size-kb K              Skip sessions smaller than K KB on disk. Default: 0.
+ *
  * Iterative bootstrap (recommended for long histories — avoids blowing Claude's context):
  *   for s in $(node wiki-extract.js --list-pending --exclude-project suhani); do
  *     node wiki-extract.js --session "$s" | claude -p "Update the wiki per CLAUDE.md"
@@ -35,7 +41,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const WIKI_ROOT = path.join(os.homedir(), '.claude', 'wiki');
+const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
 const CLAUDE_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const PROCESSED_PATH = path.join(WIKI_ROOT, '_processed.json');
 const MAX_TURNS_PER_SESSION = 100;
@@ -279,21 +285,45 @@ function applyProjectFilters(sessions, { include, exclude }) {
   });
 }
 
+function applySizeFilters(sessions, { minTurns, minSizeKb }) {
+  if (minTurns <= 0 && minSizeKb <= 0) return sessions;
+  return sessions.filter(sessionPath => {
+    try {
+      const stat = fs.statSync(sessionPath);
+      if (minSizeKb > 0 && stat.size < minSizeKb * 1024) return false;
+      if (minTurns > 0) {
+        // Quick count without full parse — count "type":"user" markers.
+        const content = fs.readFileSync(sessionPath, 'utf-8');
+        const turnCount = (content.match(/"type":"user"/g) || []).length;
+        if (turnCount < minTurns) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function parseProjectFilters(args) {
   const include = [];
   const exclude = [];
+  let minTurns = 0;
+  let minSizeKb = 0;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--include-project' && args[i + 1]) { include.push(args[i + 1]); i++; }
     else if (args[i] === '--exclude-project' && args[i + 1]) { exclude.push(args[i + 1]); i++; }
+    else if (args[i] === '--min-turns' && args[i + 1]) { minTurns = parseInt(args[i + 1], 10) || 0; i++; }
+    else if (args[i] === '--min-size-kb' && args[i + 1]) { minSizeKb = parseInt(args[i + 1], 10) || 0; i++; }
   }
-  return { include, exclude };
+  return { include, exclude, minTurns, minSizeKb };
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 function cmdList(filters) {
   const all = findAllSessions();
-  const sessions = applyProjectFilters(all, filters);
+  const afterProject = applyProjectFilters(all, filters);
+  const sessions = applySizeFilters(afterProject, filters);
   const processed = getProcessed();
   const skipped = all.length - sessions.length;
 
@@ -323,7 +353,8 @@ function cmdList(filters) {
 
 function cmdListPending(filters) {
   const all = findAllSessions();
-  const sessions = applyProjectFilters(all, filters);
+  const afterProject = applyProjectFilters(all, filters);
+  const sessions = applySizeFilters(afterProject, filters);
   const processed = getProcessed();
   for (const s of sessions) {
     if (!processed.sessions[s]) console.log(s);
@@ -332,7 +363,8 @@ function cmdListPending(filters) {
 
 function cmdBootstrap(filters) {
   const all = findAllSessions();
-  const sessions = applyProjectFilters(all, filters);
+  const afterProject = applyProjectFilters(all, filters);
+  const sessions = applySizeFilters(afterProject, filters);
   const processed = getProcessed();
   const pending = sessions.filter(s => !processed.sessions[s]);
 
@@ -364,7 +396,7 @@ function cmdBootstrap(filters) {
   console.log('5. Troubleshooting solutions found → troubleshooting/');
   console.log('6. Project context (architecture, conventions) → projects/*/context/');
   console.log('');
-  console.log('After creating pages, run: node ~/.claude/wiki/scripts/wiki-extract.js --mark-all-processed');
+  console.log('After creating pages, run: node ~/memory-wiki/scripts/wiki-extract.js --mark-all-processed');
   console.log('');
 
   for (const [project, files] of Object.entries(byProject)) {
