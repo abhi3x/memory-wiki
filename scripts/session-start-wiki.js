@@ -14,19 +14,18 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const {
+  WIKI_ROOT,
+  CLAUDE_PROJECTS,
+  walkSafe,
+  readSafe,
+} = require('./lib/wiki-utils');
 
-const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
-const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const MAX_LOG_LINES = 20;
 const MAX_CONTEXT_PAGES = 5;
 
 function log(msg) {
   process.stderr.write(`[WikiStart] ${msg}\n`);
-}
-
-function readSafe(filePath) {
-  try { return fs.readFileSync(filePath, 'utf-8'); } catch { return null; }
 }
 
 function countPendingSessions() {
@@ -38,25 +37,15 @@ function countPendingSessions() {
 
   let total = 0;
   let pending = 0;
-
-  function walk(dir) {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const e of entries) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory() && !e.name.startsWith('.') && !full.includes('/subagents/')) {
-          walk(full);
-        } else if (e.isFile() && e.name.endsWith('.jsonl')) {
-          if (!full.includes('/subagents/')) {
-            total++;
-            if (!processed[full]) pending++;
-          }
-        }
-      }
-    } catch { /* skip */ }
-  }
-
-  walk(CLAUDE_PROJECTS);
+  // Symlink-safe walk (finding #4) confined to CLAUDE_PROJECTS.
+  walkSafe(CLAUDE_PROJECTS, (full) => {
+    if (full.includes(`${path.sep}subagents${path.sep}`)) return;
+    total++;
+    if (!processed[full]) pending++;
+  }, {
+    fileFilter: (name) => name.endsWith('.jsonl'),
+    confineTo: CLAUDE_PROJECTS,
+  });
   return { total, pending };
 }
 

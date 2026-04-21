@@ -39,10 +39,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const {
+  WIKI_ROOT,
+  CLAUDE_PROJECTS: CLAUDE_ROOT,
+  assertPathInside,
+  walkSafe,
+} = require('./lib/wiki-utils');
 
-const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
-const CLAUDE_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const PROCESSED_PATH = path.join(WIKI_ROOT, '_processed.json');
 const MAX_TURNS_PER_SESSION = 100;
 const MAX_TEXT_PER_TURN = 1500;
@@ -61,10 +64,9 @@ function readJSON(filePath) {
   }
 }
 
+const { writeFileAtomic } = require('./lib/wiki-utils');
 function writeJSON(filePath, data) {
-  const tmp = filePath + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
-  fs.renameSync(tmp, filePath);
+  writeFileAtomic(filePath, JSON.stringify(data, null, 2));
 }
 
 function getProcessed() {
@@ -247,31 +249,34 @@ function formatSessionSummary(meta, turns) {
 
 function findAllSessions() {
   const sessions = [];
-
-  function walkDir(dir) {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory() && !entry.name.startsWith('.')) {
-          walkDir(fullPath);
-        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-          // Skip subagent files
-          if (fullPath.includes('/subagents/')) continue;
-          sessions.push(fullPath);
-        }
-      }
-    } catch {
-      // skip inaccessible dirs
-    }
-  }
-
-  walkDir(CLAUDE_ROOT);
+  // walkSafe refuses symlinks (security review finding #4) and confines
+  // the walk to CLAUDE_ROOT so a stray symlink can't tunnel it out.
+  walkSafe(CLAUDE_ROOT, (fullPath) => {
+    if (fullPath.includes(`${path.sep}subagents${path.sep}`)) return;
+    sessions.push(fullPath);
+  }, {
+    fileFilter: (name) => name.endsWith('.jsonl'),
+    confineTo: CLAUDE_ROOT,
+  });
   return sessions.sort((a, b) => {
     const statA = fs.statSync(a).mtime;
     const statB = fs.statSync(b).mtime;
     return statA - statB;
   });
+}
+
+// Validate a user-supplied session path before reading or marking it.
+// Must live under ~/.claude/projects/ and exist as a regular (non-symlink)
+// .jsonl file.
+function validateSessionPath(raw) {
+  const abs = assertPathInside(raw, CLAUDE_ROOT, 'session');
+  let lst;
+  try { lst = fs.lstatSync(abs); }
+  catch { throw new Error(`session: ${abs} does not exist`); }
+  if (lst.isSymbolicLink()) throw new Error(`session: ${abs} is a symlink — refusing`);
+  if (!lst.isFile()) throw new Error(`session: ${abs} is not a regular file`);
+  if (!abs.endsWith('.jsonl')) throw new Error(`session: ${abs} is not a .jsonl file`);
+  return abs;
 }
 
 // ── Project filters ──────────────────────────────────────────────────────────
@@ -420,18 +425,17 @@ function cmdBootstrap(filters) {
 }
 
 function cmdSession(sessionPath) {
-  if (!fs.existsSync(sessionPath)) {
-    log(`File not found: ${sessionPath}`);
-    process.exit(1);
-  }
+  let validated;
+  try { validated = validateSessionPath(sessionPath); }
+  catch (err) { log(err.message); process.exit(1); }
 
-  const turns = parseJSONL(sessionPath);
+  const turns = parseJSONL(validated);
   if (turns.length === 0) {
     console.log('No turns found in session.');
     return;
   }
 
-  const meta = getSessionMeta(sessionPath, turns);
+  const meta = getSessionMeta(validated, turns);
 
   console.log('# Wiki Extraction — Single Session');
   console.log(`# Generated: ${new Date().toISOString()}`);
@@ -454,12 +458,11 @@ function cmdMarkProcessed(sessionPath, filters) {
     const skipped = all.length - sessions.length;
     log(`Marked ${sessions.length} sessions as processed${skipped ? ` (${skipped} filtered out)` : ''}`);
   } else {
-    if (!fs.existsSync(sessionPath)) {
-      log(`File not found: ${sessionPath}`);
-      process.exit(1);
-    }
-    markProcessed(sessionPath);
-    log(`Marked as processed: ${sessionPath}`);
+    let validated;
+    try { validated = validateSessionPath(sessionPath); }
+    catch (err) { log(err.message); process.exit(1); }
+    markProcessed(validated);
+    log(`Marked as processed: ${validated}`);
   }
 }
 

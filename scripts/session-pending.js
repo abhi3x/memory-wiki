@@ -2,70 +2,27 @@
 'use strict';
 
 /**
- * Session Pending Tracker — Stop Hook
+ * Session Pending Tracker — Stop Hook (no-op as of security-hardening pass).
  *
- * Lightweight hook that records the current session's JSONL path
- * so the next session knows there are unprocessed conversations.
- * Does NOT extract knowledge — that's Claude's job.
+ * Previously this hook appended one line per session to ~/memory-wiki/_pending.jsonl.
+ * Nothing ever read that file — the wiki-sync.js `extractPending()` pass walks
+ * ~/.claude/projects/ directly and compares against ~/memory-wiki/_processed.json
+ * to find sessions that need ingest. The append-only writer grew unbounded.
+ *
+ * This version keeps the hook contract (read stdin, exit 0) so existing
+ * ~/.claude/settings.json installations don't break, but does no disk writes.
+ * The `_pending.jsonl` entry is removed from the installer's .gitignore
+ * because the file is no longer produced.
  *
  * Hook event: Stop
  * Input: JSON on stdin with { session_id, transcript_path, cwd }
  */
 
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-
-const PENDING_PATH = path.join(os.homedir(), 'memory-wiki', '_pending.jsonl');
-
-function log(msg) {
-  process.stderr.write(`[SessionPending] ${msg}\n`);
-}
-
 async function main() {
   try {
-    let input = '';
-    for await (const chunk of process.stdin) { input += chunk; }
-
-    let data = {};
-    try { data = JSON.parse(input); } catch { return; }
-
-    const { session_id, transcript_path, cwd } = data;
-    if (!session_id || !transcript_path) return;
-
-    // Respect WIKI_EXCLUDE_PROJECTS (comma-separated substrings) — skip if the
-    // transcript path matches. Useful when multiple users share a machine.
-    const exclude = (process.env.WIKI_EXCLUDE_PROJECTS || '')
-      .split(',').map(s => s.trim()).filter(Boolean);
-    if (exclude.some(p => transcript_path.includes(p))) {
-      log(`Skipped (WIKI_EXCLUDE_PROJECTS match): ${session_id}`);
-      return;
-    }
-
-    // Check if already in processed list
-    const processedPath = path.join(os.homedir(), 'memory-wiki', '_processed.json');
-    try {
-      const processed = JSON.parse(fs.readFileSync(processedPath, 'utf-8'));
-      if (processed.sessions && processed.sessions[transcript_path]) {
-        return; // Already processed, skip
-      }
-    } catch { /* no processed file yet */ }
-
-    // Append to pending list (deduped on next read)
-    const entry = JSON.stringify({
-      session_id,
-      transcript_path,
-      cwd,
-      timestamp: new Date().toISOString()
-    });
-
-    fs.appendFileSync(PENDING_PATH, entry + '\n', 'utf-8');
-    log(`Recorded pending: ${session_id}`);
-
-  } catch (err) {
-    log(`Error: ${err.message}`);
-  }
-
+    // Drain stdin so Claude Code's hook runner doesn't block on a closed pipe.
+    for await (const _chunk of process.stdin) { /* discard */ }
+  } catch { /* ignore */ }
   process.exit(0);
 }
 

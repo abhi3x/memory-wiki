@@ -29,44 +29,35 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
+const {
+  WIKI_ROOT,
+  CLAUDE_PROJECTS,
+  walkSafe,
+  writeFileAtomic,
+  readSafe,
+  parseFrontmatter,
+} = require('./lib/wiki-utils');
 
-const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
-const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const SYNC_SCRIPT = path.join(WIKI_ROOT, 'scripts', 'wiki-sync.js');
 
 function log(msg) { process.stderr.write(`[wiki-consolidate] ${msg}\n`); }
-function readSafe(p) { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } }
-
-function parseFrontmatter(content) {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content };
-  const fm = {};
-  for (const line of match[1].split('\n')) {
-    const kv = line.match(/^(\w+):\s*(.+)$/);
-    if (kv) fm[kv[1]] = kv[2].trim();
-  }
-  return { frontmatter: fm, body: match[2] };
-}
 
 // ── Scan wiki for promoteFromMemory → wiki page map ──────────────────────────
 
 function buildPromotionMap() {
   const map = new Map();  // memoryFileBasename → wikiPagePath
-  const walk = (dir) => {
-    try {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (e.isFile() && e.name.endsWith('.md') && !e.name.startsWith('_')) {
-          const { frontmatter } = parseFrontmatter(readSafe(full) || '');
-          const origin = frontmatter.promoteFromMemory;
-          if (origin) map.set(origin.replace(/\.md$/, ''), full);
-        }
-      }
-    } catch { /* skip */ }
+  const collect = (root) => {
+    walkSafe(root, (full) => {
+      const { frontmatter } = parseFrontmatter(readSafe(full) || '');
+      const origin = frontmatter.promoteFromMemory;
+      if (origin) map.set(origin.replace(/\.md$/, ''), full);
+    }, {
+      fileFilter: (name) => name.endsWith('.md') && !name.startsWith('_'),
+      confineTo: WIKI_ROOT,
+    });
   };
-  walk(path.join(WIKI_ROOT, 'global'));
-  walk(path.join(WIKI_ROOT, 'projects'));
+  try { collect(path.join(WIKI_ROOT, 'global')); } catch { /* no dir yet */ }
+  try { collect(path.join(WIKI_ROOT, 'projects')); } catch { /* no dir yet */ }
   return map;
 }
 
@@ -138,7 +129,7 @@ function pruneMemoryFiles(filters, dryRun) {
       if (dryRun) {
         results.pruned.push({ src, wikiPath, action: 'would-prune' });
       } else {
-        fs.writeFileSync(src, stub, 'utf-8');
+        writeFileAtomic(src, stub);
         results.pruned.push({ src, wikiPath, action: 'pruned' });
       }
     }
