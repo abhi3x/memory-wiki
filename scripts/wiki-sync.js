@@ -106,11 +106,38 @@ function classifyMemoryFile(filename, frontmatter) {
   return { wikiType: 'pattern', scope: 'global', dir: 'global/patterns' };
 }
 
+// ── User-configurable classification ────────────────────────────────────────
+//
+// Config at ~/memory-wiki/wiki-config.json lets adopters define their own
+// project keyword→slug mapping and tag keyword→tag mapping. See
+// wiki-config.example.json at the repo root for the expected shape.
+//
+// Falls back to empty maps (everything classified as 'general') if config
+// is missing — safer than hardcoded personal identifiers in OSS code.
+
+let _configCache = null;
+function loadConfig() {
+  if (_configCache) return _configCache;
+  const configPath = path.join(WIKI_ROOT, 'wiki-config.json');
+  try {
+    _configCache = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch {
+    _configCache = { projects: [], tags: [] };
+  }
+  // Normalize shape
+  _configCache.projects = _configCache.projects || [];
+  _configCache.tags = _configCache.tags || [];
+  return _configCache;
+}
+
 function detectProject(name, desc) {
-  const text = `${name} ${desc}`;
-  if (text.includes('embeddai') || text.includes('khata') || text.includes('codebase q&a')
-      || text.includes('track 1') || text.includes('fintech onboarding')) {
-    return 'embeddai';
+  const text = `${name} ${desc}`.toLowerCase();
+  const { projects } = loadConfig();
+  for (const rule of projects) {
+    if (!rule || !rule.slug || !Array.isArray(rule.keywords)) continue;
+    if (rule.keywords.some(k => text.includes(String(k).toLowerCase()))) {
+      return rule.slug;
+    }
   }
   return 'general';
 }
@@ -257,22 +284,23 @@ function migrateMemoryFiles(dryRun, filters = { include: [], exclude: [] }) {
 }
 
 function deriveTags(frontmatter, classification) {
-  const tags = [];
+  const tags = new Set();
   const text = `${frontmatter.name || ''} ${frontmatter.description || ''}`.toLowerCase();
+  const { tags: tagRules } = loadConfig();
 
-  if (text.includes('embeddai') || text.includes('khata')) tags.push('embeddai');
-  if (text.includes('communication') || text.includes('style')) tags.push('communication');
-  if (text.includes('pattern') || text.includes('behavioral')) tags.push('behavioral');
-  if (text.includes('tech') || text.includes('stack')) tags.push('tech-stack');
-  if (text.includes('startup') || text.includes('priorities')) tags.push('startup');
-  if (text.includes('profile') || text.includes('abhishek')) tags.push('profile');
-  if (text.includes('onboarding') || text.includes('fintech')) tags.push('fintech');
-
-  if (classification.scope === 'project' && classification.project) {
-    tags.push(classification.project);
+  for (const rule of tagRules) {
+    if (!rule || !rule.tag || !Array.isArray(rule.keywords)) continue;
+    if (rule.keywords.some(k => text.includes(String(k).toLowerCase()))) {
+      tags.add(rule.tag);
+    }
   }
 
-  return tags.length > 0 ? tags : ['migrated'];
+  if (classification.scope === 'project' && classification.project) {
+    tags.add(classification.project);
+  }
+
+  if (tags.size === 0) tags.add('migrated');
+  return [...tags];
 }
 
 function updateIndex(migratedPages) {

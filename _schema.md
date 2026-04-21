@@ -163,8 +163,6 @@ Destructive changes (merges, deletes) only land after human approval. Git is the
 | 0.9 | Core, well-established |
 | 1.0 | Explicit user declaration |
 
-Decay: -0.05/month without access. Below 0.15 = prune candidate. Decision pages never decay.
-
 ## Conflict Resolution
 
 1. Higher confidence + more recent wins
