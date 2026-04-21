@@ -7,13 +7,48 @@
 # first sync. Safe to re-run — skips steps that are already done.
 #
 # Usage (from the repo root):
-#   bash scripts/install.sh
+#   bash scripts/install.sh            # interactive (prompts for optional steps)
+#   bash scripts/install.sh --yes      # non-interactive; accept every optional step
+#   bash scripts/install.sh --no-hook  # skip Stop hook injection
+#   bash scripts/install.sh --no-sync  # skip first sync
+#
+# Env equivalents (useful for CI / piped installs where stdin isn't a TTY):
+#   MEMORY_WIKI_YES=1           same as --yes
+#   MEMORY_WIKI_INSTALL_HOOK=1  inject the Stop hook without prompting
+#   MEMORY_WIKI_RUN_SYNC=1      run first sync without prompting
+#
+# When stdin is not a TTY and none of the above are set, optional steps are
+# skipped rather than left hanging on a `read` prompt.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WIKI_DIR="${HOME}/memory-wiki"
 CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
+
+YES=0
+HOOK_FLAG="ask"   # ask | yes | no
+SYNC_FLAG="ask"   # ask | yes | no
+for arg in "$@"; do
+  case "$arg" in
+    --yes|-y) YES=1 ;;
+    --no-hook) HOOK_FLAG="no" ;;
+    --hook) HOOK_FLAG="yes" ;;
+    --no-sync) SYNC_FLAG="no" ;;
+    --sync) SYNC_FLAG="yes" ;;
+    -h|--help)
+      sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "Unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+[[ "${MEMORY_WIKI_YES:-0}" == "1" ]] && YES=1
+[[ "${MEMORY_WIKI_INSTALL_HOOK:-0}" == "1" ]] && HOOK_FLAG="yes"
+[[ "${MEMORY_WIKI_RUN_SYNC:-0}" == "1" ]] && SYNC_FLAG="yes"
+
+# Resolve ask-mode decisions now, so every prompt has a deterministic answer
+# when stdin isn't a TTY. Default when non-interactive: skip (safer).
+interactive=0; [[ -t 0 ]] && interactive=1
 
 echo
 echo "════════════════════════════════════════════════════════════════════"
@@ -50,8 +85,14 @@ mkdir -p "$WIKI_DIR"/{global/{entities,decisions,patterns,preferences,troublesho
 echo "✓ Directory structure ready at $WIKI_DIR"
 
 # ── 3. Copy scripts + schema ────────────────────────────────────────────────
+# install.sh is a setup tool, not a runtime script — keep it out of the
+# installed wiki dir so users only see things they actually run day-to-day.
 cp "$REPO_ROOT"/scripts/*.js "$WIKI_DIR"/scripts/
-cp "$REPO_ROOT"/scripts/*.sh "$WIKI_DIR"/scripts/
+for sh in "$REPO_ROOT"/scripts/*.sh; do
+  base="$(basename "$sh")"
+  [[ "$base" == "install.sh" ]] && continue
+  cp "$sh" "$WIKI_DIR"/scripts/
+done
 chmod +x "$WIKI_DIR"/scripts/*.js "$WIKI_DIR"/scripts/*.sh
 
 # Schema is always overwritten (source of truth). Index + log are seeded only if missing.
@@ -91,8 +132,14 @@ if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
   exit 1
 fi
 
-# Check if hook already present
-if grep -q "memory-wiki/scripts/session-pending.js" "$CLAUDE_SETTINGS"; then
+# Check if hook already present. `|| true` so set -e doesn't kill us if grep
+# exits 1 on no-match or the file is transiently unreadable.
+hook_present=0
+if grep -q "memory-wiki/scripts/session-pending.js" "$CLAUDE_SETTINGS" 2>/dev/null; then
+  hook_present=1
+fi
+
+if (( hook_present == 1 )); then
   echo "✓ Stop hook already wired into $CLAUDE_SETTINGS"
 else
   echo
@@ -110,8 +157,25 @@ Add (manually or via this installer) to ~/.claude/settings.json:
   }
 EOF
   echo
-  read -r -p "Add hook automatically via node+fs? [y/N] " ANSWER
-  if [[ "$ANSWER" =~ ^[Yy]$ ]]; then
+
+  # Resolve decision: explicit flag > --yes > TTY prompt > skip (non-interactive).
+  do_hook="no"
+  case "$HOOK_FLAG" in
+    yes) do_hook="yes" ;;
+    no)  do_hook="no" ;;
+    ask)
+      if (( YES == 1 )); then
+        do_hook="yes"
+      elif (( interactive == 1 )); then
+        read -r -p "Add hook automatically via node+fs? [y/N] " ANSWER
+        [[ "$ANSWER" =~ ^[Yy]$ ]] && do_hook="yes"
+      else
+        echo "  → Non-interactive shell; skipping hook injection. Re-run with --hook or MEMORY_WIKI_INSTALL_HOOK=1 to enable."
+      fi
+      ;;
+  esac
+
+  if [[ "$do_hook" == "yes" ]]; then
     node - "$CLAUDE_SETTINGS" <<'NODE'
 const fs = require('fs');
 const p = process.argv[2];
@@ -137,8 +201,26 @@ fi
 
 # ── 6. Optional: first sync ─────────────────────────────────────────────────
 echo
-read -r -p "Run 'wiki-sync.js --sync-only' now to generate CLAUDE.md pointer manifests? [Y/n] " ANSWER
-if [[ ! "$ANSWER" =~ ^[Nn]$ ]]; then
+# Default behavior differs from the hook prompt: first sync is safe and
+# non-destructive, so the interactive default is [Y/n]. Non-interactive still
+# skips unless explicitly opted in, to keep CI-style runs predictable.
+do_sync="no"
+case "$SYNC_FLAG" in
+  yes) do_sync="yes" ;;
+  no)  do_sync="no" ;;
+  ask)
+    if (( YES == 1 )); then
+      do_sync="yes"
+    elif (( interactive == 1 )); then
+      read -r -p "Run 'wiki-sync.js --sync-only' now to generate CLAUDE.md pointer manifests? [Y/n] " ANSWER
+      [[ ! "$ANSWER" =~ ^[Nn]$ ]] && do_sync="yes"
+    else
+      echo "  → Non-interactive shell; skipping first sync. Re-run with --sync or MEMORY_WIKI_RUN_SYNC=1 to enable."
+    fi
+    ;;
+esac
+
+if [[ "$do_sync" == "yes" ]]; then
   node "$WIKI_DIR"/scripts/wiki-sync.js --sync-only
 fi
 

@@ -88,10 +88,16 @@ function classifyMemoryFile(filename, frontmatter) {
     return { wikiType: 'entity', scope: 'global', dir: 'global/entities' };
   }
 
-  // User type: profile info → entity, behavioral → preference
+  // User type: profile info → entity, behavioral → preference.
+  // Behavioral keywords are configurable (wiki-config.json → behavioralKeywords);
+  // falls back to a small generic set if the config array is empty.
   if (sourceType === 'user') {
-    const isBehavioral = name.includes('pattern') || name.includes('cognitive')
-      || name.includes('behavioral') || desc.includes('energy') || desc.includes('vices');
+    const { behavioralKeywords } = loadConfig();
+    const needles = behavioralKeywords.length > 0
+      ? behavioralKeywords
+      : ['pattern', 'cognitive', 'behavioral', 'habit'];
+    const text = `${name} ${desc}`;
+    const isBehavioral = needles.some(k => text.includes(String(k).toLowerCase()));
     return isBehavioral
       ? { wikiType: 'preference', scope: 'global', dir: 'global/preferences' }
       : { wikiType: 'entity', scope: 'global', dir: 'global/entities' };
@@ -127,6 +133,7 @@ function loadConfig() {
   // Normalize shape
   _configCache.projects = _configCache.projects || [];
   _configCache.tags = _configCache.tags || [];
+  _configCache.behavioralKeywords = _configCache.behavioralKeywords || [];
   return _configCache;
 }
 
@@ -263,14 +270,14 @@ function migrateMemoryFiles(dryRun, filters = { include: [], exclude: [] }) {
       ].join('\n') + '\n';
 
       if (dryRun) {
-        migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType });
+        migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType, project: classification.project || null });
         continue;
       }
 
       // Write the wiki page
       fs.mkdirSync(destDir, { recursive: true });
       fs.writeFileSync(destPath, newContent, 'utf-8');
-      migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType });
+      migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType, project: classification.project || null });
       log(`Migrated: ${file} → ${classification.dir}/${wikiId}.md`);
     }
   }
@@ -332,8 +339,10 @@ function updateIndex(migratedPages) {
         const section = typeToSection[type] || 'Patterns';
 
         if (type === 'context') {
-          // Project-scoped: add under Projects section
-          const projectHeader = `### ${page.id.includes('embeddai') ? 'embeddai' : 'general'}`;
+          // Project-scoped: add under the page's own project slug (from classification).
+          // Fall back to 'general' only if no project was detected.
+          const projectSlug = page.project || 'general';
+          const projectHeader = `### ${projectSlug}`;
           if (!index.includes(projectHeader)) {
             // Add project section if missing
             const projectsMarker = '## Projects';

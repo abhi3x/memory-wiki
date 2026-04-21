@@ -22,5 +22,8 @@
       "tag": "tech-stack",
       "keywords": ["tech", "stack", "architecture", "framework"]
     }
-  ]
+  ],
+
+  "_behavioralKeywordsComment": "Keywords that route 'type: user' memory entries to global/preferences/ instead of global/entities/. Leave the array empty to use the built-in defaults (pattern, cognitive, behavioral, habit). Add your own personal vocabulary (e.g. 'energy', 'focus', 'vices') to classify more aggressively.",
+  "behavioralKeywords": ["pattern", "cognitive", "behavioral", "habit"]
 }
