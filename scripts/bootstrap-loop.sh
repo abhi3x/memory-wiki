@@ -8,9 +8,14 @@
 #
 # Usage:
 #   bootstrap-loop.sh [--exclude-project <substr>]... [--include-project <substr>]...
-#                     [--limit N]                 # Stop after N sessions (useful for piloting)
-#                     [--after dream]             # Run wiki-dream.sh after the loop finishes
-#                     [--dry-run]                 # Show what would run
+#                     [--limit N]                  # Stop after N sessions (useful for piloting)
+#                     [--after dream]              # Run wiki-dream.sh after the loop finishes
+#                     [--model MODEL]              # Claude model for each ingest subprocess
+#                                                  #   Default: claude-haiku-4-5-20251001 (~5× cheaper than Opus,
+#                                                  #   ~3× faster; ingest is pattern extraction, not deep reasoning)
+#                     [--include-trivial]          # Don't skip 0/1/2-turn sessions. Default skips <3 turns.
+#                     [--min-turns N]              # Override the trivial-skip threshold (default 3)
+#                     [--dry-run]                  # Show what would run
 #
 # Assumes wiki-extract.js is installed at ~/memory-wiki/scripts/wiki-extract.js
 # and a working `claude` CLI is on PATH.
@@ -31,6 +36,9 @@ DREAM="${HOME}/memory-wiki/scripts/wiki-dream.sh"
 DRY_RUN=0
 LIMIT=0
 AFTER=""
+MODEL="claude-haiku-4-5-20251001"
+MIN_TURNS=3
+INCLUDE_TRIVIAL=0
 FILTER_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -38,14 +46,24 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --limit) LIMIT="$2"; shift 2 ;;
     --after) AFTER="$2"; shift 2 ;;
+    --model) MODEL="$2"; shift 2 ;;
+    --min-turns) MIN_TURNS="$2"; shift 2 ;;
+    --include-trivial) INCLUDE_TRIVIAL=1; shift ;;
     --exclude-project|--include-project) FILTER_ARGS+=("$1" "$2"); shift 2 ;;
     -h|--help)
-      sed -n '3,25p' "$0"
+      sed -n '3,28p' "$0"
       exit 0
       ;;
     *) echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
 done
+
+# Compose the full filter arg list — project filters + trivial-skip
+SIZE_ARGS=()
+if [[ $INCLUDE_TRIVIAL -eq 0 ]]; then
+  SIZE_ARGS+=(--min-turns "$MIN_TURNS")
+fi
+ALL_FILTER_ARGS=("${FILTER_ARGS[@]}" "${SIZE_ARGS[@]}")
 
 if [[ ! -x "$(command -v node)" ]]; then
   echo "node not on PATH" >&2; exit 1
@@ -61,7 +79,7 @@ fi
 SESSIONS=()
 while IFS= read -r line; do
   [[ -n "$line" ]] && SESSIONS+=("$line")
-done < <(node "$EXTRACT" --list-pending "${FILTER_ARGS[@]}")
+done < <(node "$EXTRACT" --list-pending "${ALL_FILTER_ARGS[@]}")
 
 COUNT=${#SESSIONS[@]}
 if (( LIMIT > 0 && LIMIT < COUNT )); then
@@ -113,7 +131,7 @@ for s in "${SESSIONS[@]}"; do
   # write the wiki without interactive prompts. The wiki is local-only and
   # under git, so the worst-case cost of a bad ingest is a git reset --hard.
   if ! node "$EXTRACT" --session "$s" | \
-       claude -p --add-dir "$WIKI_DIR" --permission-mode bypassPermissions "$PROMPT"; then
+       claude -p --model "$MODEL" --add-dir "$WIKI_DIR" --permission-mode bypassPermissions "$PROMPT"; then
     echo "WARN: claude invocation failed for $s — leaving unprocessed, moving on." >&2
     sleep 1
     continue
