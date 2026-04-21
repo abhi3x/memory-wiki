@@ -25,10 +25,18 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const {
+  WIKI_ROOT,
+  CLAUDE_PROJECTS,
+  HOME,
+  walkSafe,
+  writeFileAtomic,
+  isPathInside,
+  readSafe,
+  parseFrontmatter,
+} = require('./lib/wiki-utils');
 
-const WIKI_ROOT = path.join(os.homedir(), 'memory-wiki');
-const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
-const GLOBAL_CLAUDE_MD = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+const GLOBAL_CLAUDE_MD = path.join(HOME, '.claude', 'CLAUDE.md');
 const PROCESSED_PATH = path.join(WIKI_ROOT, '_processed.json');
 const PENDING_EXTRACTION_PATH = path.join(WIKI_ROOT, '_pending-extraction.md');
 const WIKI_MARKER = '<!-- memory-wiki-pointer -->';
@@ -37,10 +45,6 @@ const CLAUDE_MD_MARKER = '<!-- wiki-pointer-manifest -->';
 function log(msg) {
   const ts = new Date().toISOString().slice(0, 19);
   process.stderr.write(`[wiki-sync ${ts}] ${msg}\n`);
-}
-
-function readSafe(p) {
-  try { return fs.readFileSync(p, 'utf-8'); } catch { return null; }
 }
 
 function escapeRegex(str) {
@@ -159,18 +163,6 @@ function toKebabCase(str) {
     .replace(/^-|-$/g, '');
 }
 
-function parseFrontmatter(content) {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content };
-
-  const fm = {};
-  for (const line of match[1].split('\n')) {
-    const kv = line.match(/^(\w+):\s*(.+)$/);
-    if (kv) fm[kv[1]] = kv[2].trim();
-  }
-  return { frontmatter: fm, body: match[2] };
-}
-
 function buildWikiFrontmatter(id, wikiType, scope, confidence, tags, related) {
   const lines = [
     '---',
@@ -274,9 +266,8 @@ function migrateMemoryFiles(dryRun, filters = { include: [], exclude: [] }) {
         continue;
       }
 
-      // Write the wiki page
-      fs.mkdirSync(destDir, { recursive: true });
-      fs.writeFileSync(destPath, newContent, 'utf-8');
+      // Write the wiki page (atomic — crash-safe per review)
+      writeFileAtomic(destPath, newContent);
       migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType, project: classification.project || null });
       log(`Migrated: ${file} → ${classification.dir}/${wikiId}.md`);
     }
@@ -397,7 +388,7 @@ function updateIndex(migratedPages) {
   }
   index = index.replace(/Last updated: \d{4}-\d{2}-\d{2}/, `Last updated: ${new Date().toISOString().slice(0, 10)}`);
 
-  fs.writeFileSync(indexPath, index, 'utf-8');
+  writeFileAtomic(indexPath, index);
   log(`Updated _index.md with ${migratedPages.length} new entries`);
 }
 
@@ -420,13 +411,14 @@ ${WIKI_MARKER}`;
 // ── Page walk + alwaysLoad collection ────────────────────────────────────────
 
 function walkMd(dir, onFile) {
+  // Symlink-safe (security review finding #4): walkSafe refuses symlinks at
+  // both dir and file level. confineTo=WIKI_ROOT blocks any caller from
+  // accidentally walking outside the wiki.
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) walkMd(full, onFile);
-      else if (e.isFile() && e.name.endsWith('.md') && !e.name.startsWith('_')) onFile(full);
-    }
+    walkSafe(dir, (full) => onFile(full), {
+      fileFilter: (name) => name.endsWith('.md') && !name.startsWith('_'),
+      confineTo: WIKI_ROOT,
+    });
   } catch { /* skip */ }
 }
 
@@ -524,8 +516,7 @@ function injectIntoClaudeMd(filePath, manifest) {
 
   if (existing === null) {
     // Create file with manifest only. Don't fabricate other content.
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, manifest + '\n', 'utf-8');
+    writeFileAtomic(filePath, manifest + '\n');
     return 'created';
   }
 
@@ -536,51 +527,62 @@ function injectIntoClaudeMd(filePath, manifest) {
     );
     const updated = existing.replace(markerRegex, manifest);
     if (updated === existing) return 'unchanged';
-    fs.writeFileSync(filePath, updated, 'utf-8');
+    writeFileAtomic(filePath, updated);
     return 'updated';
   }
 
   // Marker not present — append to end so we don't disturb user content.
   const sep = existing.endsWith('\n') ? '\n' : '\n\n';
-  fs.writeFileSync(filePath, existing + sep + manifest + '\n', 'utf-8');
+  writeFileAtomic(filePath, existing + sep + manifest + '\n');
   return 'appended';
 }
 
 // ── Map sanitized ~/.claude/projects/<dir> → real filesystem cwd ────────────
 
-function getCwdForProjectDir(sanitizedDirPath) {
-  // Walk recursively, find any JSONL entry with a cwd field whose path exists.
-  const visit = (dir) => {
-    try {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          const hit = visit(full);
-          if (hit) return hit;
-        } else if (e.isFile() && e.name.endsWith('.jsonl')) {
-          const lines = fs.readFileSync(full, 'utf-8').split('\n');
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const entry = JSON.parse(line);
-              if (entry.cwd && fs.existsSync(entry.cwd)) return entry.cwd;
-            } catch { /* skip */ }
-          }
-        }
-      }
-    } catch { /* skip */ }
-    return null;
-  };
+// Security review finding #5: the cwd field in a JSONL is attacker-influenced
+// (anything that ever appears in a Claude transcript). Before returning it as
+// a write target, verify it's under $HOME, exists as a real directory, and is
+// not a symlink. Symlinked cwd dirs would let a planted JSONL tunnel writes
+// outside the user's tree.
+function isSafeCwd(candidate) {
+  if (!candidate || typeof candidate !== 'string') return false;
+  const abs = path.resolve(candidate);
+  if (!isPathInside(abs, HOME)) return false;
+  let lst;
+  try { lst = fs.lstatSync(abs); } catch { return false; }
+  if (lst.isSymbolicLink()) return false;
+  if (!lst.isDirectory()) return false;
+  return true;
+}
 
-  const fromJsonl = visit(sanitizedDirPath);
-  if (fromJsonl) return fromJsonl;
+function getCwdForProjectDir(sanitizedDirPath) {
+  // Walk recursively, find any JSONL entry with a cwd field whose path is
+  // safe (see isSafeCwd). walkSafe filters symlinks from the walk itself.
+  let found = null;
+  try {
+    walkSafe(sanitizedDirPath, (full) => {
+      if (found) return;
+      const lines = fs.readFileSync(full, 'utf-8').split('\n');
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (isSafeCwd(entry.cwd)) { found = path.resolve(entry.cwd); return; }
+        } catch { /* skip */ }
+      }
+    }, {
+      fileFilter: (name) => name.endsWith('.jsonl'),
+      confineTo: CLAUDE_PROJECTS,
+    });
+  } catch { /* skip */ }
+  if (found) return found;
 
   // Fallback: reverse the sanitization heuristically.
   // `-Users-abhisheksuhani-abhishek_work-embeddai_repo` → `/Users/abhisheksuhani/abhishek_work/embeddai_repo`.
   // Dashes inside real dirnames (e.g. `abhishek-work`) are ambiguous — we accept that and fail gracefully.
   const name = path.basename(sanitizedDirPath);
   const guess = '/' + name.replace(/^-/, '').replace(/-/g, '/');
-  if (fs.existsSync(guess)) return guess;
+  if (isSafeCwd(guess)) return path.resolve(guess);
   return null;
 }
 
@@ -624,98 +626,27 @@ function syncProjectClaudeMds(filters = { include: [], exclude: [] }) {
       continue;
     }
 
+    // Defense-in-depth: even though getCwdForProjectDir already validates,
+    // re-check here so any future caller can't slip past isSafeCwd.
+    if (!isSafeCwd(cwd)) {
+      log(`Skipping wiki project '${wp}' — resolved cwd ${cwd} failed safety check`);
+      continue;
+    }
+
     const claudeMdPath = path.join(cwd, 'CLAUDE.md');
+    // Final guard: the write target must sit inside the validated cwd (which
+    // itself is under $HOME). Catches path-traversal in a theoretical
+    // buildClaudeMdManifest cwd rewrite.
+    if (!isPathInside(claudeMdPath, cwd)) {
+      log(`Refusing CLAUDE.md write outside resolved cwd: ${claudeMdPath}`);
+      continue;
+    }
     const manifest = buildClaudeMdManifest(wp);
     const result = injectIntoClaudeMd(claudeMdPath, manifest);
     log(`Project CLAUDE.md (${wp} → ${claudeMdPath}): ${result}`);
     synced++;
   }
   return synced;
-}
-
-function buildProjectContext(projectDir) {
-  if (!projectDir) return null;
-
-  // Try to detect which wiki project this maps to
-  const dirName = path.basename(projectDir).toLowerCase();
-  const projectsDir = path.join(WIKI_ROOT, 'projects');
-
-  let matchedProject = null;
-
-  try {
-    const wikiProjects = fs.readdirSync(projectsDir).filter(d =>
-      fs.statSync(path.join(projectsDir, d)).isDirectory()
-    );
-
-    for (const wp of wikiProjects) {
-      if (dirName.includes(wp) || dirName.includes(wp.replace(/-/g, ''))) {
-        matchedProject = wp;
-        break;
-      }
-    }
-  } catch { /* no projects dir */ }
-
-  if (!matchedProject) return null;
-
-  // List all pages under this project
-  const projectWikiDir = path.join(projectsDir, matchedProject);
-  const pages = [];
-
-  function walkProject(dir, prefix) {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const e of entries) {
-        if (e.isDirectory()) {
-          walkProject(path.join(dir, e.name), `${prefix}${e.name}/`);
-        } else if (e.isFile() && e.name.endsWith('.md')) {
-          const content = readSafe(path.join(dir, e.name));
-          const { frontmatter } = content ? parseFrontmatter(content) : { frontmatter: {} };
-          pages.push({
-            path: `~/memory-wiki/projects/${matchedProject}/${prefix}${e.name}`,
-            name: frontmatter.name || e.name.replace('.md', ''),
-          });
-        }
-      }
-    } catch { /* skip */ }
-  }
-  walkProject(projectWikiDir, '');
-
-  if (pages.length === 0) return null;
-
-  return pages.map(p => `- Read \`${p.path}\` — ${p.name}`).join('\n');
-}
-
-function loadCriticalPreferences() {
-  const prefsDir = path.join(WIKI_ROOT, 'global', 'preferences');
-  const prefs = [];
-
-  try {
-    const files = fs.readdirSync(prefsDir).filter(f => f.endsWith('.md'));
-    for (const file of files) {
-      const content = readSafe(path.join(prefsDir, file));
-      if (!content) continue;
-
-      const { frontmatter, body } = parseFrontmatter(content);
-      const confidence = parseFloat(frontmatter.confidence || '0');
-
-      // Only inline high-confidence preferences
-      if (confidence >= 0.8) {
-        // Extract the first meaningful line from the body as a summary
-        const lines = body.split('\n').filter(l => l.trim() && !l.startsWith('#'));
-        const summary = lines[0] || frontmatter.description || '';
-        if (summary) {
-          prefs.push(`- **${frontmatter.name || file}**: ${summary.trim().slice(0, 150)}`);
-        }
-      }
-    }
-  } catch { /* no prefs dir yet */ }
-
-  return prefs;
-}
-
-function extractCount(line) {
-  const match = line.match(/\((\d+)\)/);
-  return match ? parseInt(match[1], 10) : 0;
 }
 
 // ── Sync MEMORY.md across all projects ───────────────────────────────────────
@@ -750,9 +681,8 @@ function syncMemoryFiles(filters = { include: [], exclude: [] }) {
     const existing = readSafe(memoryFile);
 
     if (existing === null) {
-      // No memory dir/file — create with just the pointer
-      fs.mkdirSync(memoryDir, { recursive: true });
-      fs.writeFileSync(memoryFile, wikiPointer + '\n', 'utf-8');
+      // No memory dir/file — create with just the pointer (atomic)
+      writeFileAtomic(memoryFile, wikiPointer + '\n');
       synced++;
       continue;
     }
@@ -784,14 +714,14 @@ function syncMemoryFiles(filters = { include: [], exclude: [] }) {
       const updated = preservedContent
         ? wikiPointer + '\n\n' + preservedContent + '\n'
         : wikiPointer + '\n';
-      fs.writeFileSync(memoryFile, updated, 'utf-8');
+      writeFileAtomic(memoryFile, updated);
       synced++;
       continue;
     }
 
     // No pointer yet — prepend it, keep existing content
     const updated = wikiPointer + '\n\n' + existing;
-    fs.writeFileSync(memoryFile, updated, 'utf-8');
+    writeFileAtomic(memoryFile, updated);
     synced++;
   }
 
@@ -801,22 +731,15 @@ function syncMemoryFiles(filters = { include: [], exclude: [] }) {
 // ── Extract pending sessions ─────────────────────────────────────────────────
 
 function extractPending() {
-  // Find all JSONL sessions
+  // Find all JSONL sessions (symlink-safe — finding #4)
   const sessions = [];
-  function walk(dir) {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const e of entries) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory() && !e.name.startsWith('.') && !full.includes('/subagents/')) {
-          walk(full);
-        } else if (e.isFile() && e.name.endsWith('.jsonl') && !full.includes('/subagents/')) {
-          sessions.push(full);
-        }
-      }
-    } catch { /* skip */ }
-  }
-  walk(CLAUDE_PROJECTS);
+  walkSafe(CLAUDE_PROJECTS, (full) => {
+    if (full.includes(`${path.sep}subagents${path.sep}`)) return;
+    sessions.push(full);
+  }, {
+    fileFilter: (name) => name.endsWith('.jsonl'),
+    confineTo: CLAUDE_PROJECTS,
+  });
 
   // Check processed
   let processed = {};
@@ -861,7 +784,7 @@ function extractPending() {
     return `- ${date} | ${sizeKB}KB | ${path.basename(path.dirname(s))}`;
   }).join('\n');
 
-  fs.writeFileSync(PENDING_EXTRACTION_PATH, notice + sessionList + '\n', 'utf-8');
+  writeFileAtomic(PENDING_EXTRACTION_PATH, notice + sessionList + '\n');
   return pending.length;
 }
 

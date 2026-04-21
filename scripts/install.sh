@@ -114,7 +114,6 @@ if [[ ! -d "$WIKI_DIR/.git" ]]; then
   (cd "$WIKI_DIR" && git init -q && {
     cat > .gitignore <<'EOF'
 .DS_Store
-_pending.jsonl
 _processed.json
 _dream-report-*.md
 wiki-config.json
