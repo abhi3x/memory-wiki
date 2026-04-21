@@ -1,0 +1,29 @@
+{
+  "_comment": "Copy this to ~/memory-wiki/wiki-config.json and edit for your setup. Safe default: delete the example rules and leave arrays empty — everything classifies as 'general'.",
+
+  "projects": [
+    {
+      "slug": "my-project",
+      "keywords": ["my-project", "mp", "nickname-for-my-project"],
+      "_comment": "When a MEMORY.md entry's name or description matches any of these keywords (case-insensitive), migrate to ~/memory-wiki/projects/<slug>/ instead of global/"
+    }
+  ],
+
+  "tags": [
+    {
+      "tag": "communication",
+      "keywords": ["communication", "style", "feedback"]
+    },
+    {
+      "tag": "behavioral",
+      "keywords": ["pattern", "behavioral", "habit"]
+    },
+    {
+      "tag": "tech-stack",
+      "keywords": ["tech", "stack", "architecture", "framework"]
+    }
+  ],
+
+  "_behavioralKeywordsComment": "Keywords that route 'type: user' memory entries to global/preferences/ instead of global/entities/. Leave the array empty to use the built-in defaults (pattern, cognitive, behavioral, habit). Add your own personal vocabulary (e.g. 'energy', 'focus', 'vices') to classify more aggressively.",
+  "behavioralKeywords": ["pattern", "cognitive", "behavioral", "habit"]
+}

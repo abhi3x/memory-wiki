@@ -88,10 +88,16 @@ function classifyMemoryFile(filename, frontmatter) {
     return { wikiType: 'entity', scope: 'global', dir: 'global/entities' };
   }
 
-  // User type: profile info → entity, behavioral → preference
+  // User type: profile info → entity, behavioral → preference.
+  // Behavioral keywords are configurable (wiki-config.json → behavioralKeywords);
+  // falls back to a small generic set if the config array is empty.
   if (sourceType === 'user') {
-    const isBehavioral = name.includes('pattern') || name.includes('cognitive')
-      || name.includes('behavioral') || desc.includes('energy') || desc.includes('vices');
+    const { behavioralKeywords } = loadConfig();
+    const needles = behavioralKeywords.length > 0
+      ? behavioralKeywords
+      : ['pattern', 'cognitive', 'behavioral', 'habit'];
+    const text = `${name} ${desc}`;
+    const isBehavioral = needles.some(k => text.includes(String(k).toLowerCase()));
     return isBehavioral
       ? { wikiType: 'preference', scope: 'global', dir: 'global/preferences' }
       : { wikiType: 'entity', scope: 'global', dir: 'global/entities' };
@@ -106,11 +112,39 @@ function classifyMemoryFile(filename, frontmatter) {
   return { wikiType: 'pattern', scope: 'global', dir: 'global/patterns' };
 }
 
+// ── User-configurable classification ────────────────────────────────────────
+//
+// Config at ~/memory-wiki/wiki-config.json lets adopters define their own
+// project keyword→slug mapping and tag keyword→tag mapping. See
+// wiki-config.example.json at the repo root for the expected shape.
+//
+// Falls back to empty maps (everything classified as 'general') if config
+// is missing — safer than hardcoded personal identifiers in OSS code.
+
+let _configCache = null;
+function loadConfig() {
+  if (_configCache) return _configCache;
+  const configPath = path.join(WIKI_ROOT, 'wiki-config.json');
+  try {
+    _configCache = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch {
+    _configCache = { projects: [], tags: [] };
+  }
+  // Normalize shape
+  _configCache.projects = _configCache.projects || [];
+  _configCache.tags = _configCache.tags || [];
+  _configCache.behavioralKeywords = _configCache.behavioralKeywords || [];
+  return _configCache;
+}
+
 function detectProject(name, desc) {
-  const text = `${name} ${desc}`;
-  if (text.includes('embeddai') || text.includes('khata') || text.includes('codebase q&a')
-      || text.includes('track 1') || text.includes('fintech onboarding')) {
-    return 'embeddai';
+  const text = `${name} ${desc}`.toLowerCase();
+  const { projects } = loadConfig();
+  for (const rule of projects) {
+    if (!rule || !rule.slug || !Array.isArray(rule.keywords)) continue;
+    if (rule.keywords.some(k => text.includes(String(k).toLowerCase()))) {
+      return rule.slug;
+    }
   }
   return 'general';
 }
@@ -236,14 +270,14 @@ function migrateMemoryFiles(dryRun, filters = { include: [], exclude: [] }) {
       ].join('\n') + '\n';
 
       if (dryRun) {
-        migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType });
+        migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType, project: classification.project || null });
         continue;
       }
 
       // Write the wiki page
       fs.mkdirSync(destDir, { recursive: true });
       fs.writeFileSync(destPath, newContent, 'utf-8');
-      migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType });
+      migrated.push({ src: srcPath, dest: destPath, id: wikiId, type: classification.wikiType, project: classification.project || null });
       log(`Migrated: ${file} → ${classification.dir}/${wikiId}.md`);
     }
   }
@@ -257,22 +291,23 @@ function migrateMemoryFiles(dryRun, filters = { include: [], exclude: [] }) {
 }
 
 function deriveTags(frontmatter, classification) {
-  const tags = [];
+  const tags = new Set();
   const text = `${frontmatter.name || ''} ${frontmatter.description || ''}`.toLowerCase();
+  const { tags: tagRules } = loadConfig();
 
-  if (text.includes('embeddai') || text.includes('khata')) tags.push('embeddai');
-  if (text.includes('communication') || text.includes('style')) tags.push('communication');
-  if (text.includes('pattern') || text.includes('behavioral')) tags.push('behavioral');
-  if (text.includes('tech') || text.includes('stack')) tags.push('tech-stack');
-  if (text.includes('startup') || text.includes('priorities')) tags.push('startup');
-  if (text.includes('profile') || text.includes('abhishek')) tags.push('profile');
-  if (text.includes('onboarding') || text.includes('fintech')) tags.push('fintech');
-
-  if (classification.scope === 'project' && classification.project) {
-    tags.push(classification.project);
+  for (const rule of tagRules) {
+    if (!rule || !rule.tag || !Array.isArray(rule.keywords)) continue;
+    if (rule.keywords.some(k => text.includes(String(k).toLowerCase()))) {
+      tags.add(rule.tag);
+    }
   }
 
-  return tags.length > 0 ? tags : ['migrated'];
+  if (classification.scope === 'project' && classification.project) {
+    tags.add(classification.project);
+  }
+
+  if (tags.size === 0) tags.add('migrated');
+  return [...tags];
 }
 
 function updateIndex(migratedPages) {
@@ -304,8 +339,10 @@ function updateIndex(migratedPages) {
         const section = typeToSection[type] || 'Patterns';
 
         if (type === 'context') {
-          // Project-scoped: add under Projects section
-          const projectHeader = `### ${page.id.includes('embeddai') ? 'embeddai' : 'general'}`;
+          // Project-scoped: add under the page's own project slug (from classification).
+          // Fall back to 'general' only if no project was detected.
+          const projectSlug = page.project || 'general';
+          const projectHeader = `### ${projectSlug}`;
           if (!index.includes(projectHeader)) {
             // Add project section if missing
             const projectsMarker = '## Projects';

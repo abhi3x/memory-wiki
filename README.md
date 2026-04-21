@@ -6,9 +6,29 @@ A persistent, markdown-based knowledge system for Claude Code. No vector databas
 
 Memory Wiki gives Claude Code a persistent memory that compounds over time. Instead of embedding conversations and vector-searching them (like mem0 or agentmemory), it takes a different approach:
 
-**The LLM builds and maintains a wiki.** Knowledge is extracted from conversations and synthesized into cross-referenced markdown pages. Each session makes the wiki richer.
+**The LLM builds and maintains a wiki.** Knowledge is extracted from conversations and synthesized into cross-referenced markdown pages. Each session makes the wiki richer. You can read it, browse it in Obsidian, diff it in git, edit it by hand.
 
 This is based on the [LLM Wiki](https://github.com/tobi/llm-wiki) pattern — the idea that knowledge should be compiled once and kept current, not re-derived on every query.
+
+## Requirements
+
+- **Claude Code** installed ([claude.com/claude-code](https://claude.com/claude-code))
+- **Node.js 18+** (for the extraction + sync scripts)
+- **git** (the wiki is a local git repo — your rollback safety net)
+- **macOS or Linux** (scripts tested on macOS bash 3.2 and Linux bash 4+)
+- Optional: **Obsidian** if you want a graph-view UI for your wiki
+
+## Install
+
+```bash
+git clone https://github.com/abhi3x/memory-wiki.git
+cd memory-wiki
+bash scripts/install.sh
+```
+
+The installer copies scripts + schema to `~/memory-wiki/`, initializes git, optionally wires the Stop hook into `~/.claude/settings.json`, and runs the first sync. Idempotent — safe to re-run.
+
+After install, edit `~/memory-wiki/wiki-config.json` to define your project keyword rules (see `wiki-config.example.json` for the shape).
 
 ## How it works
 
@@ -331,6 +351,19 @@ node ~/memory-wiki/scripts/wiki-sync.js
 | Setup time | 2 minutes | 15-30 minutes |
 
 This is for personal memory — one developer, a handful of projects. If you need to search across millions of documents, use a vector database. This is something different.
+
+## Related work
+
+There are a few ways to give Claude persistent memory. Each makes different trade-offs:
+
+| Project | Mechanism | Best when you want |
+|---|---|---|
+| **[claude-mem](https://github.com/thedotmack/claude-mem)** | Auto-captures sessions, AI-compresses them, injects context back invisibly | Zero-friction memory that "just works" without thinking about it |
+| **[mem0](https://github.com/mem0ai/mem0) / [Letta](https://github.com/letta-ai/letta)** | Vector DB + extraction pipeline | Cross-application memory at scale, multi-user systems |
+| **ChatGPT / Claude native memory** | Opaque provider-side storage | You don't want to self-host or manage files |
+| **memory-wiki (this project)** | Human-readable markdown wiki, explicit promotion via "dreams", Obsidian-compatible, git-tracked | You want to *read* and *edit* your memory, treat it as a compounding artifact, and keep everything local |
+
+The honest framing: if you want memory to be silent plumbing, `claude-mem` is probably a better fit. If you want a second brain you can open in your editor, diff in git, browse in Obsidian, and hand-edit when the LLM gets it wrong — this is that.
 
 ## Philosophy
 
